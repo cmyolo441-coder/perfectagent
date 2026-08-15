@@ -194,6 +194,25 @@ def make_console() -> Console:
 SLASH_COMMANDS = [
     ("/model", "select model — PgUp/PgDn/Tab to navigate"),
     ("/effort", "low · medium · high · extrahigh · ultrahigh"),
+    ("/goal", "goal contract — set · prove · close · status · waive · clear"),
+    ("/autonomy", "autonomy level 0-5 (observer → autonomous)"),
+    ("/state", "live projection of the event log (cost, goal, dead-ends)"),
+    ("/rewind", "rewind timeline + files to a seq — /rewind <seq>"),
+    ("/revert", "revert FILES only to a seq (agent keeps memory)"),
+    ("/fork", "fork the timeline into a new branch — /fork [name]"),
+    ("/verify", "verify the event log's Merkle spine"),
+    ("/why", "causal chain for an event — /why <seq>"),
+    ("/impact", "code impact analysis — /impact <symbol> [path]"),
+    ("/forge", "environment digest + drift — /forge [probe|drift]"),
+    ("/oracle", "post-run analysis, calibration, facts"),
+    ("/budget", "budget governor status"),
+    ("/constitution", "standing rules — /constitution [show|edit]"),
+    ("/replay", "replay the session log as a film (text)"),
+    ("/memory", "recent episodes + dead-end ledger"),
+    ("/judge", "deterministic check — /judge <type> <json-or-args>"),
+    ("/scout", "fan out read-only scouts — /scout q1 | q2 | q3"),
+    ("/team", "parallel worker team (up to 8) — /team task1 | task2 | …"),
+    ("/auto", "autopilot self-routing — /auto [on|off|status]"),
     ("/help", "commands and key bindings"),
     ("/clear", "clear the screen"),
     ("/new", "fresh conversation"),
@@ -220,6 +239,44 @@ class SlashCompleter(Completer):
                     yield Completion(f"/effort {e.key}",
                                      start_position=-len(text),
                                      display_meta=e.description)
+            return
+        if word.startswith("/goal ") or word == "/goal":
+            arg = word[len("/goal"):].strip()
+            for sub, meta in (
+                    ("set", "set <statement> | <clause> | <clause> …"),
+                    ("prove", "prove <clause-id> — run its own predicate"),
+                    ("prove-all", "prove every clause from scratch"),
+                    ("close", "closure ritual — compute the terminal state"),
+                    ("status", "the Goal Compass: distance, velocity, focus"),
+                    ("waive", "waive <clause-id> --reason '…' (human waiver)"),
+                    ("clear", "deactivate the goal")):
+                if sub.startswith(arg):
+                    yield Completion(f"/goal {sub}",
+                                     start_position=-len(text),
+                                     display_meta=meta)
+            return
+        if word.startswith("/autonomy ") or word == "/autonomy":
+            arg = word[len("/autonomy"):].strip()
+            from .agent import AUTONOMY_LEVELS
+            for level, desc in AUTONOMY_LEVELS.items():
+                if str(level).startswith(arg):
+                    yield Completion(f"/autonomy {level}",
+                                     start_position=-len(text),
+                                     display_meta=desc)
+            return
+        if word.startswith("/judge ") or word == "/judge":
+            arg = word[len("/judge"):].strip()
+            for ptype, meta in (
+                    ("exit_code", '{"command": "pytest -q", "expect": 0}'),
+                    ("file_exists", '{"path": "src/x.py"}'),
+                    ("file_contains", '{"path": "src/x.py", "text": "def foo"}'),
+                    ("file_matches", '{"path": "src/x.py", "pattern": "…"}'),
+                    ("command_output_contains",
+                     '{"command": "python -V", "text": "Python"}')):
+                if ptype.startswith(arg):
+                    yield Completion(f"/judge {ptype} ",
+                                     start_position=-len(text),
+                                     display_meta=meta)
             return
         for name, meta in SLASH_COMMANDS:
             if name.startswith(word):
@@ -328,6 +385,10 @@ class UI:
         self._flash: tuple[str, str] | None = None
         self._flash_timer: threading.Timer | None = None
 
+        # goal-status cache for the border (fold is not free per frame)
+        self._goal_cache = None
+        self._goal_cache_ts = 0.0
+
         self._build()
 
     # -- small helpers ---------------------------------------------------------
@@ -389,6 +450,18 @@ class UI:
             segs.append((f"{model.tag} ", "class:box.tag"))
         segs.append((f" effort: {effort.label.lower()} ",
                      f"class:box.effort {effort_color}"))
+        segs.append((f" L{self.agent.autonomy} ", "class:box.tag"))
+        # live goal distance — always on screen when a goal is active (§24).
+        # cached for 1s: the border re-renders every frame, and status()
+        # folds the whole log
+        now = time.time()
+        if self._goal_cache is None or now - self._goal_cache_ts > 1.0:
+            self._goal_cache = self.agent.goal.status()
+            self._goal_cache_ts = now
+        goal = self._goal_cache
+        if goal.active:
+            segs.append((f" goal: {(1 - goal.distance) * 100:.0f}% ",
+                         "class:box.status"))
         segs.append((f" session: {self.agent.session_id} ", "class:box.session"))
 
         # fixed = corners (2) + first dash (1) + "──" before each later seg
@@ -793,6 +866,46 @@ class UI:
             self.print_info(f"✓ reasoning display: {state}", C["pink"])
         elif cmd == "/usage":
             self.print_usage(self.agent.turns)
+        elif cmd == "/goal":
+            self._cmd_goal(arg)
+        elif cmd == "/autonomy":
+            self._cmd_autonomy(arg)
+        elif cmd == "/state":
+            self._cmd_state()
+        elif cmd == "/rewind":
+            self._cmd_rewind(arg)
+        elif cmd == "/revert":
+            self._cmd_revert(arg)
+        elif cmd == "/fork":
+            self._cmd_fork(arg)
+        elif cmd == "/verify":
+            ok, msg = self.agent.log.verify()
+            self.print_info(f"{'✓' if ok else '✗'} {msg}",
+                            C["green"] if ok else C["red"])
+        elif cmd == "/why":
+            self._cmd_why(arg)
+        elif cmd == "/impact":
+            self._cmd_impact(arg)
+        elif cmd == "/forge":
+            self._cmd_forge(arg)
+        elif cmd == "/oracle":
+            self.print_info(self.agent.oracle.format_report(), C["cyan"])
+        elif cmd == "/budget":
+            self._cmd_budget()
+        elif cmd == "/constitution":
+            self._cmd_constitution(arg)
+        elif cmd == "/replay":
+            self._cmd_replay()
+        elif cmd == "/memory":
+            self._cmd_memory()
+        elif cmd == "/judge":
+            self._cmd_judge(arg)
+        elif cmd == "/scout":
+            self._cmd_scout(arg)
+        elif cmd == "/team":
+            self._cmd_team(arg)
+        elif cmd == "/auto":
+            self._cmd_auto(arg)
         elif cmd == "/about":
             self.print_info(f"{APP_NAME} v1.0 — advanced terminal AI agent",
                             C["accent"])
@@ -800,6 +913,522 @@ class UI:
                             "OpenCode Zen & TokenRouter providers", C["dim"])
         else:
             self.print_error(f"unknown command: {cmd} — try /help")
+
+    # -- event-log commands ------------------------------------------------------
+
+    def _cmd_goal(self, arg: str) -> None:
+        parts = arg.split(None, 1)
+        sub = parts[0].lower() if parts else "status"
+        rest = parts[1].strip() if len(parts) > 1 else ""
+
+        if sub in ("", "status", "show"):
+            self.print_info(self.agent.goal.format(), C["cyan"])
+        elif sub == "set":
+            self._goal_set(rest)
+        elif sub == "prove":
+            if not rest:
+                self.print_error("usage: /goal prove <clause-id>  "
+                                 "(or /goal prove-all)")
+                return
+            ok, detail = self.agent.goal.prove_by_predicate(rest)
+            self.print_info(f"{'✓' if ok else '✗'} {rest}: {detail}",
+                            C["green"] if ok else C["red"])
+            self.print_info(self.agent.goal.format(), C["dim"])
+        elif sub == "prove-all":
+            st = self.agent.goal.status()
+            for c in st.clauses:
+                if c.proof and not c.advisory:
+                    ok, detail = self.agent.goal.prove_by_predicate(c.id)
+                    self.print_info(f"{'✓' if ok else '✗'} {c.id}: {detail}",
+                                    C["green"] if ok else C["red"])
+            self.print_info(self.agent.goal.format(), C["dim"])
+        elif sub == "close":
+            result = self.agent.goal.close(fresh=True)
+            color = C["green"] if result["state"] == "ACHIEVED" else C["yellow"]
+            self.print_info(f"GOAL CLOSED: {result['state']}", color)
+            for r in result["reasons"]:
+                self.print_info(f"  - {r}", C["dim"])
+            self.print_info(result["bundle"], C["cyan"])
+        elif sub == "waive":
+            wparts = rest.split("--reason", 1)
+            cid = wparts[0].strip()
+            reason = wparts[1].strip() if len(wparts) > 1 else "human waiver"
+            if not cid:
+                self.print_error("usage: /goal waive <clause-id> --reason '…'")
+                return
+            if self.agent.goal.waive(cid, reason):
+                self.print_info(f"✓ clause {cid} waived (recorded as an event)",
+                                C["yellow"])
+            else:
+                self.print_error(f"no such clause: {cid}")
+        elif sub == "clear":
+            self.agent.goal.clear()
+            self.print_info("✓ goal cleared", C["dim"])
+        else:
+            self.print_error("goal subcommands: set · prove · prove-all · "
+                             "close · status · waive · clear")
+
+    def _goal_set(self, rest: str) -> None:
+        """Parse the TUI goal grammar into a contract:
+
+        /goal set <statement> | <clause> @ <proof-type>:<arg> | …
+        Prefix a clause with ! for an anti-clause, ~ for an invariant.
+        A clause piece may also be raw JSON for full control.
+
+        Proof types: exit_code, file_exists, file_contains, file_matches,
+        command_output_contains, ast_assert, diff_assert, file_unchanged,
+        tool_delta.
+        """
+        import json as _json
+        from .goal import GoalContractError
+        if not rest:
+            self.print_error(
+                "usage: /goal set <statement> | <clause> @ <type>:<arg> | …\n"
+                "  e.g. /goal set ship it | tests pass @ exit_code:pytest -q"
+                " | docs exist @ file_exists:docs.md\n"
+                "  ! prefix = anti-clause, ~ prefix = invariant")
+            return
+        pieces = [p.strip() for p in rest.split("|") if p.strip()]
+        statement = pieces[0]
+        clauses: list[dict] = []
+        anti: list[dict] = []
+        invariants: list[dict] = []
+        for i, piece in enumerate(pieces[1:], 1):
+            try:
+                if piece.startswith("{"):
+                    c = _json.loads(piece)
+                    clauses.append(c)
+                    continue
+                is_anti = piece.startswith("!")
+                is_inv = piece.startswith("~")
+                text = piece.lstrip("!~ ").strip()
+                if "@" not in text:
+                    self.print_error(
+                        f"clause {i} needs a machine-checkable proof: "
+                        f"'{text}' @ <type>:<arg>  (or mark it advisory "
+                        "with raw JSON)")
+                    return
+                ctext, proof_str = [x.strip() for x in text.split("@", 1)]
+                proof = self._parse_proof(proof_str)
+                if proof is None:
+                    return
+                if is_anti:
+                    anti.append({"id": f"A{len(anti) + 1}", "text": ctext,
+                                 "check": proof})
+                elif is_inv:
+                    invariants.append({"id": f"I{len(invariants) + 1}",
+                                       "text": ctext, "check": proof})
+                else:
+                    clauses.append({"id": f"C{len(clauses) + 1}",
+                                    "text": ctext, "weight": 1.0,
+                                    "proof": proof})
+            except _json.JSONDecodeError as e:
+                self.print_error(f"clause {i}: invalid JSON — {e}")
+                return
+        if not clauses:
+            self.print_error("a goal needs at least one clause with a proof")
+            return
+        try:
+            self.agent.goal.set_goal(statement, clauses, anti, invariants)
+        except GoalContractError as e:
+            self.print_error(f"contract rejected: {e}")
+            return
+        self.print_info(f"✓ goal contract frozen — {len(clauses)} clause(s)"
+                        + (f", {len(anti)} anti" if anti else "")
+                        + (f", {len(invariants)} invariant" if invariants
+                           else ""), C["green"])
+        self.print_info(self.agent.goal.format(), C["dim"])
+
+    def _parse_proof(self, s: str) -> dict | None:
+        """'<type>:<arg>' -> predicate dict (None + error print on failure)."""
+        if ":" not in s:
+            self.print_error(f"proof needs '<type>:<arg>', got: {s!r}")
+            return None
+        ptype, arg = s.split(":", 1)
+        ptype, arg = ptype.strip(), arg.strip()
+        if ptype in ("exit_code", "tool_delta"):
+            return {"type": ptype, "command": arg, "expect": 0}
+        if ptype == "file_exists":
+            return {"type": ptype, "path": arg}
+        if ptype in ("file_contains", "file_matches",
+                     "command_output_contains"):
+            if ":" not in arg:
+                self.print_error(f"{ptype} needs '<path-or-cmd>:<text>'")
+                return None
+            a, b = arg.split(":", 1)
+            key = "path" if ptype.startswith("file") else "command"
+            field2 = "text" if ptype != "file_matches" else "pattern"
+            return {"type": ptype, key: a.strip(), field2: b.strip()}
+        if ptype == "ast_assert":
+            if ":" not in arg:
+                self.print_error("ast_assert needs '<path>:<symbol>'")
+                return None
+            a, b = arg.split(":", 1)
+            return {"type": ptype, "path": a.strip(), "symbol": b.strip()}
+        if ptype == "diff_assert":
+            return {"type": ptype, "path": arg, "forbid": []}
+        if ptype == "file_unchanged":
+            if ":" not in arg:
+                self.print_error("file_unchanged needs '<path>:<sha256>'")
+                return None
+            a, b = arg.split(":", 1)
+            return {"type": ptype, "path": a.strip(),
+                    "baseline_hash": b.strip()}
+        self.print_error(f"unknown proof type: {ptype!r}")
+        return None
+
+    def _cmd_autonomy(self, arg: str) -> None:
+        from .agent import AUTONOMY_LEVELS
+        if not arg:
+            lines = [f"current: L{self.agent.autonomy} — "
+                     f"{AUTONOMY_LEVELS[self.agent.autonomy]}"]
+            for level, desc in AUTONOMY_LEVELS.items():
+                lines.append(f"  L{level}  {desc}")
+            self.print_info("\n".join(lines), C["cyan"])
+            return
+        try:
+            level = int(arg)
+        except ValueError:
+            self.print_error("usage: /autonomy <0-5>")
+            return
+        desc = self.agent.set_autonomy(level)
+        self.print_info(f"✓ autonomy → L{self.agent.autonomy} — {desc}",
+                        C["green"])
+
+    def _cmd_state(self) -> None:
+        st = self.agent.state()
+        goal = self.agent.goal.status()
+        lines = [
+            f"branch: {st.branch}   head seq: {st.head_seq}   "
+            f"events: {len(self.agent.log)}",
+            f"cost: {st.cost_summary()}",
+            f"tool calls: {st.tool_calls}   errors: {st.tool_errors}   "
+            f"commands: {st.commands_run}",
+            f"autonomy: L{st.autonomy}",
+        ]
+        if st.files_touched:
+            lines.append("files touched: " + ", ".join(sorted(st.files_touched)))
+        if goal.active:
+            proven = sum(1 for c in goal.clauses if c.state == "PROVEN")
+            lines.append(f"goal: {goal.statement} — "
+                         f"{proven}/{len(goal.clauses)} clauses "
+                         f"({(1 - goal.distance) * 100:.0f}% done)")
+        if st.dead_ends:
+            lines.append(f"dead ends: {len(st.dead_ends)}")
+        if st.verdicts:
+            passed = sum(1 for v in st.verdicts if v.get("passed"))
+            lines.append(f"judge verdicts: {passed}/{len(st.verdicts)} passed")
+        if st.swarm_reports:
+            lines.append(f"scout reports: {len(st.swarm_reports)}")
+        if st.episodes:
+            lines.append(f"memory episodes: {len(st.episodes)}")
+        self.print_info("\n".join(lines), C["cyan"])
+
+    def _cmd_rewind(self, arg: str) -> None:
+        if not arg:
+            evs = self.agent.log.events()[-12:]
+            if not evs:
+                self.print_info("log is empty", C["dim"])
+                return
+            lines = ["recent events (pick a seq, then /rewind <seq>):"]
+            for ev in evs:
+                preview = ""
+                if ev.type in ("user.message", "assistant.message"):
+                    preview = str(ev.data.get("text", ""))[:50]
+                elif ev.type in ("tool.call", "tool.result"):
+                    preview = str(ev.data.get("name", ""))
+                lines.append(f"  {ev.seq:>4}  {ev.type:<20} {preview}")
+            self.print_info("\n".join(lines), C["dim"])
+            return
+        try:
+            seq = int(arg)
+        except ValueError:
+            self.print_error("usage: /rewind <seq>  (see /rewind for seqs)")
+            return
+        new_head, kept = self.agent.rewind_to(seq)
+        self.print_info(f"✓ rewound to seq {new_head} — {kept} message(s) kept "
+                        "(tool-call context is dropped)", C["green"])
+
+    def _cmd_fork(self, arg: str) -> None:
+        branch = self.agent.fork_timeline(name=arg or None)
+        self.print_info(f"✓ forked timeline → branch '{branch}' "
+                        "(now continuing on it)", C["green"])
+
+    def _cmd_revert(self, arg: str) -> None:
+        """REVERT (§9.1): files only return to seq N — the agent KEEPS its
+        memory. This is what feeds the Dead-End Ledger."""
+        if not arg:
+            self.print_error("usage: /revert <seq>  (see /rewind for seqs)")
+            return
+        try:
+            seq = int(arg)
+        except ValueError:
+            self.print_error("usage: /revert <seq>")
+            return
+        result = self.agent.revert_files_to(seq)
+        if "error" in result:
+            self.print_error(result["error"])
+            return
+        self.print_info(f"✓ files reverted to seq {seq} — "
+                        f"{result['restored']} restored, "
+                        f"{result['removed']} removed "
+                        "(agent memory kept)", C["green"])
+
+    def _cmd_why(self, arg: str) -> None:
+        """Appendix A `argus why`: walk the causation chain from an event
+        back to the human instruction that caused it."""
+        if not arg:
+            self.print_error("usage: /why <seq>  (see /rewind for seqs)")
+            return
+        try:
+            seq = int(arg)
+        except ValueError:
+            self.print_error("usage: /why <seq>")
+            return
+        evs = self.agent.log.events()
+        target = next((e for e in evs if e.seq == seq), None)
+        if target is None:
+            self.print_error(f"no event at seq {seq}")
+            return
+        chain = self.agent.log.why(target.id)
+        lines = [f"causal chain for seq {seq} ({target.type}):"]
+        for i, ev in enumerate(chain):
+            indent = "  " * i
+            preview = ""
+            if ev.type in ("user.message", "assistant.message"):
+                preview = str(ev.data.get("text", ""))[:40]
+            elif ev.type in ("tool.call", "tool.result"):
+                preview = str(ev.data.get("name", ""))
+            clause = f"  [clause {ev.correlation_id}]" \
+                if ev.correlation_id else ""
+            lines.append(f"{indent}← seq {ev.seq} {ev.type} "
+                         f"({ev.actor}) {preview}{clause}")
+        self.print_info("\n".join(lines), C["cyan"])
+
+    def _cmd_impact(self, arg: str) -> None:
+        """§15.2 the killer query: blast radius of changing a symbol."""
+        parts = arg.split(None, 1)
+        if not parts:
+            self.print_error("usage: /impact <symbol> [path]")
+            return
+        symbol = parts[0]
+        path = parts[1].strip() if len(parts) > 1 else "."
+        self.print_info(f"⠹ indexing {path}…", C["dim"])
+
+        def run():
+            self.agent.nexus.index(path)
+            self.console.print(Text(self.agent.nexus.format_impact(symbol),
+                                    style=C["fg"]))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _cmd_forge(self, arg: str) -> None:
+        sub = arg.strip().lower()
+        if sub == "drift":
+            delta = self.agent.forge.drift()
+            if delta is None:
+                self.print_info("✓ no environment drift detected", C["green"])
+            else:
+                self.print_info(f"⚠ environment drift: {delta['changed']}",
+                                C["yellow"])
+        else:
+            d = self.agent.forge.probe()
+            lines = [f"environment digest: {d['digest']}",
+                     f"  os {d['os']} {d['arch']}   python {d['python']}",
+                     f"  cwd {d['cwd']}",
+                     f"  lockfile {d['lockfile_hash'] or 'none'}"]
+            if d["tools"]:
+                lines.append("  tools: " + ", ".join(
+                    f"{k}={v.split()[0] if v else '?'}"
+                    for k, v in d["tools"].items()))
+            self.print_info("\n".join(lines), C["cyan"])
+
+    def _cmd_budget(self) -> None:
+        gov = self.agent.budget_gov
+        s = gov.spend()
+        b = gov.budget
+        ok, reason = gov.check()
+        lines = [f"budget {'OK' if ok else 'BREACHED'}",
+                 f"  usd    ${s['usd']:.4f} / ${b.max_usd}",
+                 f"  steps  {s['steps']} / {b.max_steps}",
+                 f"  tokens {s['tokens']} / {b.max_tokens}",
+                 f"  files  {s['files']} / {b.max_files}"]
+        if not ok:
+            lines.append(f"  ⚠ {reason}")
+        self.print_info("\n".join(lines),
+                        C["green"] if ok else C["red"])
+
+    def _cmd_constitution(self, arg: str) -> None:
+        sub = arg.strip().lower()
+        path = self.agent.oracle.constitution_path()
+        if sub == "edit":
+            if path:
+                self.print_info(f"constitution file: {path}", C["dim"])
+                self.print_info("edit it directly — it is human-owned and "
+                                "never auto-modified. It is always present "
+                                "in the agent's context.", C["cyan"])
+            else:
+                self.print_error("no memory dir configured")
+        else:
+            text = self.agent.oracle.read_constitution()
+            if text.strip():
+                self.print_info("CONSTITUTION (standing rules):\n" + text,
+                                C["cyan"])
+            else:
+                self.print_info(f"constitution is empty — create {path} "
+                                "with your standing rules", C["dim"])
+
+    def _cmd_replay(self) -> None:
+        """Replay the session log as a text film (§26)."""
+        from .kernel import replay
+        lines = ["REPLAY — the session as a film:"]
+        for ev in replay(self.agent.log):
+            t = ev.type
+            d = ev.data
+            if t == "user.message":
+                lines.append(f"  [{ev.seq}] ❯ {str(d.get('text', ''))[:60]}")
+            elif t == "assistant.message":
+                lines.append(f"  [{ev.seq}] ◆ {str(d.get('text', ''))[:60]}")
+            elif t == "tool.call":
+                lines.append(f"  [{ev.seq}] ⚙ {d.get('name', '')}")
+            elif t == "tool.result":
+                icon = "✓" if d.get("status") == "done" else "✗"
+                lines.append(f"  [{ev.seq}] {icon} {d.get('name', '')} "
+                             f"({d.get('status', '')})")
+            elif t == "snapshot.taken":
+                lines.append(f"  [{ev.seq}] 📸 snapshot {str(d.get('tree', ''))[:10]}")
+            elif t == "clause.proven":
+                lines.append(f"  [{ev.seq}] ★ clause {d.get('clause', '')} PROVEN")
+            elif t == "goal.closed":
+                lines.append(f"  [{ev.seq}] ■ GOAL {d.get('state', '')}")
+            elif t == "cost.incurred":
+                lines.append(f"  [{ev.seq}] $ cost "
+                             f"{d.get('tokens_in', 0)}→{d.get('tokens_out', 0)} tok")
+        self.print_info("\n".join(lines), C["cyan"])
+
+    def _cmd_memory(self) -> None:
+        block = self.agent.memory.context_block(max_episodes=5)
+        self.print_info(block, C["cyan"])
+
+    def _cmd_judge(self, arg: str) -> None:
+        import json as _json
+        predicate: dict | None = None
+        arg = arg.strip()
+        if arg.startswith("{"):
+            try:
+                predicate = _json.loads(arg)
+            except ValueError as e:
+                self.print_error(f"invalid JSON predicate: {e}")
+                return
+        elif arg:
+            # shorthand: /judge <type> <value>  → predicate with default key
+            tokens = arg.split(None, 1)
+            ptype = tokens[0]
+            value = tokens[1] if len(tokens) > 1 else ""
+            key = {"exit_code": "command",
+                   "file_exists": "path",
+                   "file_contains": "path",
+                   "file_matches": "path",
+                   "command_output_contains": "command"}.get(ptype)
+            if key is None:
+                self.print_error("predicate types: exit_code · file_exists · "
+                                 "file_contains · file_matches · "
+                                 "command_output_contains")
+                return
+            predicate = {"type": ptype, key: value}
+        else:
+            self.print_error("usage: /judge <type> <arg>  or  "
+                             '/judge {"type": "file_exists", "path": "…"}')
+            return
+
+        def run():
+            verdict = self.agent.judge.check(predicate)
+            icon = "✓" if verdict.passed else "✗"
+            color = C["green"] if verdict.passed else C["red"]
+            self.print_info(f"{icon} [{verdict.kind}] {verdict.detail}", color)
+            if verdict.evidence:
+                self.print_info(f"  evidence: {verdict.evidence[:200]}",
+                                C["dim"])
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _cmd_scout(self, arg: str) -> None:
+        questions = [q.strip() for q in arg.split("|") if q.strip()]
+        if not questions:
+            self.print_error("usage: /scout <question1> | <question2> | …")
+            return
+        self.print_info(f"⠹ scouting {len(questions)} question(s)…", C["dim"])
+
+        def run():
+            reports = self.agent.swarm.scout(
+                questions, context=self.agent.scout_context())
+            self.console.print(Text(self.agent.swarm.format(reports),
+                                    style=C["fg"]))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _cmd_team(self, arg: str) -> None:
+        """Dispatch a parallel worker team (up to 8) on explicit tasks.
+
+        /team <task1> | <task2> | …   — each task gets its own worker.
+        Prefix a task with 'role:' to pin a role, e.g.
+        'researcher: find the latest flask version'."""
+        from .team import MAX_WORKERS, ROLES
+        tasks: list[dict] = []
+        for piece in (p.strip() for p in arg.split("|")):
+            if not piece:
+                continue
+            role = None
+            for r in ROLES:
+                if piece.lower().startswith(r + ":"):
+                    role = r
+                    piece = piece[len(r) + 1:].strip()
+                    break
+            if piece:
+                tasks.append({"task": piece, "role": role})
+        if not tasks:
+            self.print_error("usage: /team <task1> | <task2> | …  "
+                             "(up to 8, optional 'role:' prefix)")
+            return
+        tasks = tasks[:MAX_WORKERS]
+        self.print_info(f"⚡ dispatching {len(tasks)} worker(s) in parallel…",
+                        C["pink"])
+
+        def run():
+            reports = self.agent.team.run(
+                tasks, context=self.agent.scout_context(),
+                read_only=self.agent.autonomy <= 1)
+            self.console.print(Text(self.agent.team.format(reports),
+                                    style=C["fg"]))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _cmd_auto(self, arg: str) -> None:
+        """Toggle or inspect the AutoPilot self-routing brain."""
+        sub = arg.strip().lower()
+        ap = self.agent.autopilot
+        if sub == "on":
+            ap.enabled = True
+            self.print_info("✓ autopilot ON — the agent will auto-enable "
+                            "parallel team / goal mode / real-time web as "
+                            "each turn needs them", C["green"])
+        elif sub == "off":
+            ap.enabled = False
+            self.print_info("autopilot OFF — manual control only", C["dim"])
+        elif sub in ("", "status"):
+            state = "ON" if ap.enabled else "OFF"
+            self.print_info(f"autopilot: {state}\n"
+                            "  auto-enables, per turn:\n"
+                            "  ⚡ parallel team  — independent subtasks "
+                            "detected (up to 8 workers)\n"
+                            "  ⚡ goal mode      — verifiable mission "
+                            "detected (auto-drafted contract)\n"
+                            "  ⚡ real-time web  — live-data question "
+                            "detected\n"
+                            "  toggle: /auto on · /auto off",
+                            C["cyan"])
+        else:
+            self.print_error("usage: /auto [on|off|status]")
 
     # -- turn execution (worker thread) ---------------------------------------------------------
 
@@ -853,15 +1482,24 @@ class UI:
                 self._set_status(f"calling {s[5:]}…")
             elif s.startswith("running:"):
                 self._set_status(f"running {s[8:]}…")
+            elif s.startswith("team:"):
+                self._set_status(f"⚡ {s[5:]} workers running in parallel…")
             else:
                 self._set_status(s)
+
+        def on_route(route):
+            # the AutoPilot's decision, shown live — nothing hidden (A7)
+            self.print_info("AUTOPILOT  " + route.summary(), C["pink"])
+            for r in route.reasons:
+                self.print_info(f"  ↳ {r}", C["dim"])
 
         turn = None
         try:
             turn = self.agent.run_turn(
                 text, on_token, on_reasoning, on_tool_call, on_tool_update,
                 on_status, self._approve_blocking,
-                should_cancel=self._cancel_flag.is_set)
+                should_cancel=self._cancel_flag.is_set,
+                on_route=on_route)
         except Exception as e:  # noqa: BLE001 — never kill the UI thread
             self.print_error(f"{type(e).__name__}: {e}")
         finally:
@@ -1005,6 +1643,21 @@ class UI:
         items = [
             row("/model", "select model (PgUp/PgDn/Tab to navigate)"),
             row("/effort", "low · medium · high · extrahigh · ultrahigh"),
+            row("/goal", "set · prove · close · status · waive · clear"),
+            row("/autonomy", "0-5 observer → autonomous"),
+            row("/state", "live projection of the event log"),
+            row("/rewind", "rewind timeline+files · /revert files only"),
+            row("/fork", "branch the timeline · /verify Merkle spine"),
+            row("/why", "causal chain for an event seq"),
+            row("/impact", "code blast-radius analysis (Nexus)"),
+            row("/forge", "environment digest + drift"),
+            row("/oracle", "post-run analysis + calibration"),
+            row("/budget", "budget governor status"),
+            row("/constitution", "standing rules (human-owned)"),
+            row("/replay", "replay the session log as a film"),
+            row("/memory", "episodes + dead-end ledger"),
+            row("/judge", "deterministic check (exit_code, file_exists, …)"),
+            row("/scout", "parallel read-only scouts — /scout q1 | q2"),
             row("/new", "fresh conversation"),
             row("/history", "browse previous turns"),
             row("/save", "save session to disk"),
@@ -1095,9 +1748,11 @@ class UI:
         return t
 
     def _tool_result_line(self, ev: ToolEvent) -> Text:
-        icon = {"done": "✓", "error": "✗", "denied": "⊘"}.get(ev.status, "·")
+        icon = {"done": "✓", "error": "✗", "denied": "⊘",
+                "blocked": "⛔"}.get(ev.status, "·")
         color = {"done": C["green"], "error": C["red"],
-                 "denied": C["yellow"]}.get(ev.status, C["dim"])
+                 "denied": C["yellow"], "blocked": C["red"]}.get(
+                     ev.status, C["dim"])
         first_line = ev.result.splitlines()[0] if ev.result else ""
         if len(first_line) > 100:
             first_line = first_line[:97] + "…"

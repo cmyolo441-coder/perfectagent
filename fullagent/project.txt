@@ -1,0 +1,2799 @@
+<div align="center">
+
+```
+    █████╗ ██████╗  ██████╗ █████╗ ██████╗    ██████╗
+   ██╔══██╗██╔══██╗██╔════╝██╔══██╗██╔════╝   ██╔═══██╗
+   ███████║██████╔╝██║  ███╗██║  ██║█████╗     ██║   ██║
+   ██╔══██║██╔══██╗██║   ██║██║  ██║██╔══╝     ██║   ██║
+   ██║  ██║██║  ██║╚██████╔╝██████╔╝███████╗   ╚██████╔╝
+   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚══════╝    ╚═════╝
+```
+
+# ✦ PROJECT BRAHMASTRA ✦
+## `ARGUS-Ω` — The Temporal Intelligence Substrate
+
+**A pure-Python, event-sourced, time-travelling, multi-agent, formally-guarded,
+cinematically-animated autonomous terminal organism.**
+
+</div>
+
+<div align="center">
+
+| | |
+|---|---|
+| **Version** | `4.0` — Master Specification |
+| **Status** | Planning · Pre-implementation |
+| **Owner** | BITTUCHAUHAN |
+| **Language** | Python 3.13+ — **exclusively**, no exceptions, safety-critical path included |
+| **Document type** | Specification. **Zero implementation code by design.** |
+| **Date** | 2026-07-25 |
+| **Length** | 6 Parts · 42 Sections · 10 Appendices · 18 ADRs |
+
+</div>
+
+---
+
+# ▶ HOW TO READ THIS DOCUMENT
+
+| If you are… | Read |
+|---|---|
+| Deciding whether this is worth building | Part 0, §2, **Part VI — Goal Mode**, §44 |
+| An engineer about to implement | Part II entirely, then your subsystem in Part III |
+| A reliability reviewer | §19 Judge, §35 Testing, §46 Risks, Appendix H |
+| A designer | §23–§26, Appendix E |
+| Auditing the reasoning | Appendix H (all 18 Architecture Decision Records) |
+| In a hurry | Part 0 — **The Mul Bindu**, then **Part VI — GOAL MODE**, where every power converges |
+
+---
+
+# TABLE OF CONTENTS
+
+**PART 0 — THE MUL BINDU**
+- §0.1 [The One Idea](#01-the-one-idea)
+- §0.2 [Everything Derived From One Primitive](#02-everything-derived-from-one-primitive)
+- §0.3 [The Twelve Dividends](#03-the-twelve-dividends)
+
+**PART I — FOUNDATIONS**
+- §1 The Thesis
+- §2 Nine Structural Failures of Every Existing Agent
+- §3 Competitive Teardown
+- §4 Design Axioms
+- §5 The Determinism Ladder
+- §6 Formal Invariants
+
+**PART II — THE TEMPORAL KERNEL**
+- §7 The Causal Event Graph
+- §8 Content Addressing & the Merkle Spine
+- §9 Time-Travel Semantics
+- §10 The Multiverse: Branching Execution
+- §11 The Fold: State as a Pure Function of History
+- §12 Complete Architecture Map
+
+**PART III — THE NINE SUBSYSTEMS**
+- §13 I · CORTEX — Orchestration
+- §14 II · HIPPOCAMPUS — Memory
+- §15 III · NEXUS — The Code Property Graph
+- §16 IV · SWARM — Multi-Agent Society
+- §17 V · HANDS — Tools & Effectors
+- §18 VI · FORGE — Environment Reproducibility
+- §19 VII · JUDGE — Verification
+- §20 VIII · ROUTER — The Model Fabric
+- §21 IX · ORACLE — Self-Improvement
+- §22 Cross-Cutting: The Autonomy Ladder
+
+**PART IV — THE FACE**
+- §23 Interface Philosophy
+- §24 Layout & Panels
+- §25 The Motion Design Language
+- §26 Replay Cinema & the Timeline Scrubber
+- §27 Accessibility, Theming, Degradation
+
+**PART V — ENGINEERING**
+- §28 Performance in Pure Python
+- §29 Full Technology Stack
+- §30 Repository Layout
+- §31 Data Model & Schemas
+- §32 Protocol Interoperability
+- §33 Prompts as Versioned Artifacts
+- §34 Observability
+- §35 Testing Strategy
+
+**PART VI — ✦ GOAL MODE ✦  (THE CONVERGENCE)**
+- §36 What Goal Mode Is — And What Everyone Else Calls A "Goal"
+- §37 The Goal Contract — A Goal As A Machine-Checkable Object
+- §38 The Goal Kernel — Total Attribution
+- §39 Goal Distance — A Real, Computed Number
+- §40 Goal Gravity — Re-Aiming All Nine Subsystems At One Clause
+- §41 Drift, Amendment & The Negotiation Protocol
+- §42 Convergence & Closure
+- §43 The Goal Compass — CLI & TUI Surface
+
+**PART VII — THE PROGRAM**
+- §44 Roadmap — 52 Weeks, 11 Phases
+- §45 Benchmarks & Hard Metrics
+- §46 Engineering Risk Register
+- §47 Cost Model, Non-Goals, Next Actions
+
+**APPENDICES**
+- A · CLI Command Surface
+- B · Goal Contract Grammar
+- C · Animation Frame Library
+- D · Error Taxonomy
+- E · Keybinding Map
+- F · Configuration Reference
+- G · Failure Runbooks
+- H · 18 Architecture Decision Records
+- I · Glossary
+
+---
+# PART 0 — THE MUL BINDU (मूल बिंदु)
+
+> *Every great system is one idea, ruthlessly applied. Everything else is consequence.*
+
+## 0.1 The One Idea
+
+Every previous version of this document listed features. Features are not architecture.
+This version has **one central axis**, and all twelve subsystems are consequences of it:
+
+<div align="center">
+
+### ✦ THE MUL BINDU ✦
+
+**An agent's every interaction with reality — every thought, every byte read, every
+command run, every file mutated — is recorded as an immutable, causally-ordered,
+content-addressed event in a single append-only log.**
+
+**Nothing else is state. State is a pure fold over that log.**
+
+</div>
+
+That is it. One sentence. Everything below is derived.
+
+Most agents are built as *a loop that calls a model and mutates the world*. Their state lives in
+a Python list of messages, in RAM, unrecoverable, unauditable, unreplayable. When it fails at
+step 47, there is nothing to inspect and nothing to restore.
+
+ARGUS-Ω inverts this. **The log is the program. The agent is a projection.**
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  CONVENTIONAL AGENT                                                         │
+│                                                                             │
+│    messages = []              ← state lives here, in RAM, opaque            │
+│    while True:                                                              │
+│        r = model(messages)     ← no record of why                           │
+│        run(r.tool)             ← no record of what changed                  │
+│        messages.append(…)      ← truncated when full → amnesia              │
+│                                                                             │
+│  Crash → everything lost.  Mistake → unrecoverable.  Question → unanswerable│
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│  ARGUS-Ω                                                                    │
+│                                                                             │
+│    EVENT LOG (append-only, content-addressed, causally linked)              │
+│    │                                                                        │
+│    ├─► fold → Plan DAG          │  every projection is derived,             │
+│    ├─► fold → Memory tiers      │  never authoritative                      │
+│    ├─► fold → Cost ledger       │                                           │
+│    ├─► fold → Filesystem state  │  → rewind = fold to seq N                 │
+│    ├─► fold → TUI render        │  → replay = fold with a clock             │
+│    └─► fold → Audit report      │  → resume = fold after crash              │
+│                                                                             │
+│  Crash → refold.  Mistake → rewind.  Question → query the log.              │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+## 0.2 Everything Derived From One Primitive
+
+This is the load-bearing table of the entire document. Every "superpower" in this specification
+is a **consequence** of the Mul Bindu — not a bolted-on feature. That is why they compose instead
+of conflicting.
+
+| Capability | How it falls out of the log |
+|---|---|
+| **Crash resume** | Refold the log. The FSM is reconstructed exactly. |
+| **Step-level rewind** | Fold to sequence *N*; restore the filesystem from the snapshot referenced at *N*. |
+| **Replay cinema** | Fold with a wall clock. The session becomes a film. |
+| **Branching timelines** | Fork the log at *N*, append divergent events. Two futures, one past. |
+| **Counterfactual analysis** | Fold branch A and branch B, diff the resulting projections. |
+| **Deterministic testing** | Record model responses as events; replay the log with zero API cost. |
+| **Perfect audit trail** | The log *is* the audit trail. Nothing can happen off-record. |
+| **Cost attribution** | Fold the cost projection, grouped by any dimension. |
+| **Dead-end memory** | Query the log for failed subtrees; that query *is* the ledger. |
+| **Goal forensics** | Every token carries provenance; trace any decision back to the goal clause that caused it. |
+| **Distributed swarm coherence** | Sub-agents emit into the same causal graph; merges are log merges. |
+| **Self-improvement** | The Oracle mines the log corpus. Experience is queryable data. |
+
+**Test of the idea:** remove the event log from ARGUS-Ω and *twelve* features die simultaneously.
+Remove it from any competitor and nothing changes, because they never had these features.
+
+## 0.3 The Twelve Dividends
+
+> One primitive. Twelve capabilities no other terminal agent has. That is what "all powers in one
+> place" actually means — not twelve bolted-on features, but twelve views of one correct decision.
+
+---
+---
+
+# PART I — FOUNDATIONS
+
+## 1. THE THESIS
+
+> The terminal is the last honest interface. No telemetry-driven redesign, no engagement loop,
+> no dark patterns. It does exactly what you type. The instant you put an autonomous agent inside
+> it, you inherit **total power and total responsibility** — because that same agent is one
+> hallucinated token away from `rm -rf /`, `git push --force`, `DROP TABLE`, and `curl | sh`.
+
+**Every terminal agent shipped so far optimises for the demo. ARGUS-Ω optimises for the 3 a.m.
+production incident.**
+
+The hard problem was never "call an LLM in a loop." That is fifty lines of Python. The hard
+problems are:
+
+1. **Memory that survives 500 steps** without collapsing into amnesia or context overflow.
+2. **Actions that are provably reversible**, so trust is *structural*, not emotional.
+3. **Safety enforced on parsed structure**, not regex theatre.
+4. **Verification by machine**, so "done" is a fact rather than a claim.
+5. **Understanding code semantically**, not as a bag of grep hits.
+6. **An interface so alive and legible** that a human can supervise a mind running ten times
+   their reading speed.
+
+ARGUS-Ω solves all six from a single architectural decision (Part 0), in one auditable language,
+with no black boxes anywhere in the safety-critical path.
+
+**The name.** *Argus Panoptes* — the hundred-eyed giant who never slept, each eye watching
+something different. That is the architecture: many specialised observers, one coherent will.
+`Ω` denotes the terminal state: the final form.
+
+---
+
+## 2. NINE STRUCTURAL FAILURES OF EVERY EXISTING AGENT
+
+Each failure maps to a dedicated subsystem. None is solved by "a better prompt."
+
+### 2.1 Context Collapse
+Agents append tool output to a message list and truncate the middle at 80% capacity. The agent
+forgets the architectural decision from step 12 and at step 40 rediscovers the dead end it
+already burned fifteen minutes on. **→ §14 Hippocampus.**
+
+### 2.2 Unverifiable Completion
+"I've fixed the bug!" No test ran. No assertion passed. Confidence is produced by the same
+stochastic process that produced the error. **→ §19 Judge.**
+
+### 2.3 Goal Amnesia
+Ask any agent at step 40: *"what exactly was the objective, how much of it is proven done, and
+how far are we from finished?"* It will paraphrase your first sentence. It holds no measurable
+representation of the goal, so it cannot report distance, cannot detect drift, and cannot tell
+the difference between finishing and stopping. **→ Part VI, Goal Mode.**
+
+### 2.4 Irreversibility
+Ask any agent: *"exactly what did you change in the last forty minutes, and how do I revert step
+17 without losing steps 18–40?"* None can answer. **→ §9 Time-Travel Semantics.**
+
+### 2.5 Semantic Blindness
+Agents "understand" code through grep and file reads. They do not know the call graph, the type
+lattice, the runtime shape of a value, or which of six `process()` definitions is the right one.
+**→ §15 Nexus.**
+
+### 2.6 Environment Drift
+The agent "fixes" a bug that only exists because its Python version differs from CI. Nobody
+controlled the environment, so nothing is reproducible. **→ §18 Forge.**
+
+### 2.7 Single-Threaded Thinking
+One loop, one model, one thought. Reading forty files sequentially when forty cheap readers could
+run in parallel is a 30× latency tax. **→ §16 Swarm.**
+
+### 2.8 Cost Opacity
+A task quietly burns $14 of frontier tokens. The user discovers this on the monthly invoice.
+**→ §20 Router.**
+
+### 2.9 Interfaces That Hide Thinking
+A spinner and a wall of scrolling text. The human cannot see the plan, the cost, the diff, or the
+reasoning — so supervision decays into blind trust, which is not supervision.
+**→ Part IV, The Face.**
+
+---
+
+## 3. COMPETITIVE TEARDOWN
+
+Honest. We are not better at everything. We are structurally different on the axes that determine
+whether you can leave the thing running unattended.
+
+| Capability | Claude Code | Codex CLI | Aider | OpenHands | Goose | Cursor CLI | Warp AI | **ARGUS-Ω** |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
+| Event-sourced state | ○ | ○ | ○ | ○ | ○ | ○ | ○ | **●** |
+| Step-level rewind | ○ | ○ | ◑ | ○ | ○ | ○ | ○ | **●** |
+| Branching timelines | ○ | ○ | ○ | ○ | ○ | ○ | ○ | **●** |
+| Session replay as film | ○ | ○ | ○ | ○ | ○ | ○ | ○ | **●** |
+| Machine-checkable goal contract | ○ | ○ | ○ | ○ | ○ | ○ | ○ | **●** |
+| Provenance-tagged context | ○ | ○ | ○ | ○ | ○ | ○ | ○ | **●** |
+| Code property graph | ○ | ○ | ◑ | ○ | ○ | ◑ | ○ | **●** |
+| LSP / DAP integration | ○ | ○ | ○ | ○ | ○ | ◑ | ○ | **●** |
+| Deterministic verification | ◑ | ◑ | ◑ | ◑ | ○ | ◑ | ○ | **●** |
+| Dead-end memory | ○ | ○ | ○ | ○ | ○ | ○ | ○ | **●** |
+| Live goal-distance metering | ○ | ○ | ○ | ○ | ○ | ○ | ○ | **●** |
+| Parallel sub-agents | ◑ | ○ | ○ | ◑ | ○ | ○ | ○ | **●** |
+| Hard USD budget enforcement | ○ | ○ | ○ | ○ | ○ | ○ | ○ | **●** |
+| Reproducible environment | ○ | ○ | ○ | ◑ | ○ | ○ | ○ | **●** |
+| Fully offline capable | ○ | ○ | ● | ◑ | ● | ○ | ○ | **●** |
+| Animated, dense TUI | ◑ | ○ | ○ | ○ | ○ | ○ | ● | **●** |
+| Single-language auditable core | ● | ○ | ● | ● | ○ | ○ | ○ | **●** |
+
+`●` full · `◑` partial · `○` absent
+
+**Where we will lose, stated plainly:**
+- Raw model quality. We do not train models. A frontier lab's own harness will always have
+  first access to its best weights.
+- Ecosystem gravity. Vendor-bundled tools ship to millions by default.
+- Initial simplicity. A 200-line agent is easier to start hacking on.
+
+**Where we win, and why it compounds:** every axis above is an *architectural* property. A
+competitor cannot add step-level rewind next sprint — it requires event sourcing from day one.
+That is the moat: not cleverness, but a foundational decision made early and never violated.
+
+---
+
+## 4. DESIGN AXIOMS
+
+Non-negotiable. A pull request violating any of these is rejected regardless of merit.
+
+| # | Axiom | Enforcement |
+|---|---|---|
+| A1 | **The log is the state.** Nothing authoritative lives only in RAM. | Chaos tests SIGKILL at random points; replay-equality assertion |
+| A2 | **Every mutation is reversible.** No byte is written without a committed recovery path. | Write tools refuse to run without a snapshot reference |
+| A3 | **Verification is a state transition, not a vibe.** | `PASSED` is unreachable without a predicate result event |
+| A4 | **Determinism wherever physically possible.** The LLM decides *what*; Python decides *whether*. | See §5 Determinism Ladder |
+| A5 | **Model-agnostic to the bone.** | Provider adapter is <300 lines; two providers from week one |
+| A6 | **Fail loudly.** Ambiguity raises a structured question. Silence is a bug. | No bare `except:` in the codebase; lint-enforced |
+| A7 | **The human is the pilot.** Every autonomous action is legible in real time. | Autonomy ladder §22; no hidden actions at any level |
+| A8 | **Pure Python.** No Rust/Go/C++ in the core. | CI rejects non-Python source files outside vendored deps |
+| A9 | **Zero egress by default.** Nothing leaves the machine unless explicitly enabled. | Local-first routing; `argus cost` lists every remote call |
+| A10 | **Beauty is a feature.** An interface a human enjoys watching is one a human actually supervises. | 60fps budget is a release gate |
+| A11 | **Every action must serve a stated goal clause.** Orphan work does not exist. | Goal Kernel attribution check, §38 |
+| A12 | **No clever code.** Bus factor is an engineering property. | Typed interfaces, mandatory docstrings, complexity ceiling |
+
+---
+
+## 5. THE DETERMINISM LADDER
+
+A core discipline: push every decision as far down this ladder as it will go. The LLM is the
+**most expensive, least reliable, least debuggable** component. Use it only where nothing else
+works.
+
+| Rung | Mechanism | Cost | Reliability | Used for |
+|:--:|---|---|---|---|
+| **0** | Constant / config | free | 100% | Budgets, thresholds, paths, clause weights |
+| **1** | Pure Python function | free | 100% | Diff application, path resolution, budget math |
+| **2** | Parser (AST, bashlex, tree-sitter) | free | 100% | Command safety, symbol lookup, refactors |
+| **3** | External deterministic tool (ripgrep, pytest, mypy) | ~ms | 100% | Search, tests, type checks |
+| **4** | Graph algorithm over the Nexus | ~ms | 100% | Impact analysis, call graphs, centrality |
+| **5** | Statistical retrieval (BM25, vectors) | ~ms | high | Context selection |
+| **6** | Local small model | ~free | medium | Classification, routing, clause matching, summarisation |
+| **7** | Mid-tier LLM | ¢ | medium | Summarisation, exploration, mechanical edits |
+| **8** | Frontier LLM | $ | medium-high | Planning, debugging, architecture |
+| **9** | Frontier LLM × N consensus | $$$ | highest available | Destructive decisions only |
+
+**Design review question, asked of every feature:** *"What is the lowest rung that solves this?"*
+If the answer is 7–9 and a rung ≤4 exists, the design is rejected.
+
+**Measured target:** in a typical run, ≥70% of decisions resolve at rung ≤4. This is the single
+largest driver of both cost and reliability.
+
+---
+
+## 6. FORMAL INVARIANTS
+
+Properties that must hold at all times, each enforced by an automated test that runs in CI on
+every commit. These are not aspirations; a violation is a release blocker.
+
+| ID | Invariant | Test |
+|---|---|---|
+| **I1** | `fold(log[0:n])` is deterministic and pure. | Property test: fold twice, assert structural equality |
+| **I2** | For all n: `fold(log[0:n])` is a valid, self-consistent state. | Fuzz over all prefixes of 1,000 recorded sessions |
+| **I3** | No write event exists without a preceding snapshot event for the same paths. | Log linter, runs on every session close |
+| **I4** | No `PASSED` node event exists without a preceding predicate-result event. | Log linter |
+| **I5** | Every tool-call event is attributed to exactly one open goal clause. | Log linter: zero orphan actions |
+| **I6** | Every event's `causation_id` refers to an earlier event. The graph is acyclic. | Topological sort assertion |
+| **I7** | Two concurrent `WRITE` nodes never have overlapping path sets. | Scheduler property test with Hypothesis |
+| **I8** | Cumulative cost projection never exceeds the run budget without a pause event. | Budget property test |
+| **I9** | Every content hash referenced in the log resolves in the snapshot store. | GC safety check |
+| **I10** | Replaying a recorded session reproduces byte-identical projections. | Golden-session test suite |
+| **I11** | Goal distance is a pure function of (goal contract, projections). | Property test over 1,000 recorded sessions |
+| **I12** | No run closes as `ACHIEVED` while any clause lacks proof evidence. | Goal Kernel closing check |
+
+**On "formal":** these are property-based and fuzz-tested invariants, not machine-checked proofs.
+We do not claim formal verification. We claim *systematically tested* invariants — which is
+honest, achievable, and already far beyond the state of the art in this category.
+
+---
+---
+
+# PART II - THE TEMPORAL KERNEL
+
+> *The kernel is 4,000 lines of Python. It is the only part of ARGUS-Omega that must be perfect.*
+
+## 7. THE CAUSAL EVENT GRAPH
+
+### 7.1 The Event
+
+Every event is an immutable record with a fixed envelope:
+
+```
+Event
+ |- seq            : monotonic integer, gapless, per-session
+ |- id             : blake3(canonical_serialisation)  - content address
+ |- ts             : nanosecond monotonic + wall clock pair
+ |- session        : session identifier
+ |- branch         : timeline identifier (see 10)
+ |- type           : one of the 61 event types (7.2)
+ |- actor          : sovereign | scout:3 | surgeon | auditor | librarian |
+|                  navigator | historian | human | system
+ |- causation_id   : the event that directly caused this one
+ |- correlation_id : the root goal this ultimately serves
+ |- provenance     : system | user | tool_output | web | file | model
+ |- payload        : type-specific, Pydantic-validated, canonically serialised
+ `- parent_hash    : hash of the previous event - the Merkle spine (8)
+```
+
+**`causation_id` is the crucial field.** It turns a flat log into a *causal graph*. Any state,
+any file change, any dollar spent can be traced backward through an unbroken chain to the exact
+human instruction that caused it. No other agent can answer "why did you do this?" mechanically.
+
+### 7.2 Event Taxonomy - 61 Types in 9 Families
+
+| Family | Types | Examples |
+|---|:--:|---|
+| **Session** | 5 | `SessionStarted` `SessionPaused` `SessionResumed` `SessionClosed` `BranchForked` |
+| **Plan** | 8 | `PlanProposed` `NodeCreated` `NodeStarted` `NodePassed` `NodeFailed` `NodeSkipped` `NodeRolledBack` `PlanAmended` |
+| **Cognition** | 7 | `PromptAssembled` `ModelRequested` `TokenStreamed` `ModelResponded` `ToolCallParsed` `ReasoningTraced` `ConsensusReached` |
+| **Action** | 9 | `ToolInvoked` `ToolStreamedOutput` `ToolReturned` `ToolTimedOut` `ToolCancelled` `ProcessSpawned` `ProcessExited` `PtyInput` `PtyOutput` |
+| **World** | 8 | `SnapshotTaken` `FileRead` `FileWritten` `FilePatched` `FileDeleted` `GitCommitted` `EnvironmentProbed` `NetworkFetched` |
+| **Goal** | 7 | `GoalDeclared` `ClauseAdded` `ClauseProven` `ClauseRegressed` `GoalDistanceMeasured` `GoalAmended` `GoalAchieved` |
+| **Verification** | 6 | `PredicateDeclared` `PredicateRan` `PredicatePassed` `PredicateFailed` `AuditorObjected` `RegressionDetected` |
+| **Memory** | 6 | `EpisodeCompacted` `FactLearned` `DeadEndRecorded` `SkillDistilled` `RetrievalPerformed` `NexusReindexed` |
+| **Economy** | 5 | `CostIncurred` `BudgetSliced` `BudgetExceeded` `CacheHit` `ProviderFailedOver` |
+
+Every type has a Pydantic schema, a version number, and a forward-migration function. The log
+format is stable across releases - a session recorded on v1.0 replays on v3.0.
+
+### 7.3 Write Path
+
+```
+  emit(event)
+      |
+      |- 1. validate      Pydantic schema, type-versioned
+      |- 2. canonicalise  deterministic serialisation (sorted keys, no float ambiguity)
+      |- 3. hash          blake3 content address + parent_hash chain
+      |- 4. append        JSONL, O_APPEND, batched fsync (<=10ms window)
+      |- 5. index         SQLite WAL insert, same transaction boundary
+      |- 6. project       apply to in-memory projections incrementally
+`- 7. publish       async bus -> TUI, telemetry, goal kernel
+```
+
+**Durability contract:** an event is *committed* once step 4 fsyncs. Steps 5-7 are derived and
+rebuildable. A crash between 4 and 5 is recovered by refolding - SQLite is a cache, never truth.
+
+**Performance:** batched fsync gives a sustained ~40,000 events/sec on commodity NVMe, roughly
+three orders of magnitude more than any session needs. Persistence is not the bottleneck.
+
+### 7.4 Backpressure
+
+The bus is bounded. If the TUI cannot consume at the rate the agent produces, the *TUI drops
+frames* - never the log. Rendering is lossy by design; history never is.
+
+---
+
+## 8. CONTENT ADDRESSING AND THE MERKLE SPINE
+
+### 8.1 Everything Is Hashed
+
+| Object | Address | Purpose |
+|---|---|---|
+| Event | `blake3(canonical(event))` | Deduplication, integrity, causal references |
+| File snapshot | `blake3(bytes)` | Deduplicated storage; identical files stored once |
+| Prompt | `blake3(rendered_prompt)` | Cache key, reproducibility, prompt A/B analysis |
+| Model response | `blake3(request_hash + response)` | Cassette replay key |
+| Tool arguments | `blake3(canonical(args))` | Loop detection, idempotency, memoisation |
+| Nexus index node | `blake3(file_content)` | Incremental reindex trigger |
+| Plan DAG | Merkle root of node hashes | Detect plan mutation, diff two plans |
+
+### 8.2 The Spine
+
+Each event carries `parent_hash`. The log is therefore a hash chain - a blockchain without the
+blockchain. Consequences:
+
+- **Tamper evidence.** Editing event 40 invalidates every hash from 40 onward. `argus verify-log`
+  detects any modification in O(n) with no external service.
+- **Cheap sync.** Two copies of a session compare Merkle roots to find the divergence point in
+  O(log n).
+- **Trustworthy audit.** A session transcript can be signed once at the root and independently
+  verified later.
+
+### 8.3 The Snapshot Store
+
+Content-addressed, deduplicated, compressed:
+
+```
+.argus/store/
+  |- objects/
+  |    |- 7f/3a2c9e...     zstd-compressed blob, addressed by blake3
+  |    `- b1/04ffa7...
+  |- trees/                directory manifests (path -> blob hash)
+  |- refs/                 step_seq -> tree hash
+  `- gc.log                retention accounting
+```
+
+A 100-step session editing 30 files stores roughly 30 unique blobs, not 3,000 - identical content
+collapses automatically. Typical overhead is single-digit megabytes. Retention is configurable
+(`keep_last_n_sessions`, `max_store_gb`) with mark-and-sweep GC that will never collect a blob
+referenced by a reachable event (invariant **I9**).
+
+---
+
+## 9. TIME-TRAVEL SEMANTICS
+
+The flagship capability. Precisely defined, because "undo" in an agent is subtle.
+
+### 9.1 Three Distinct Operations
+
+| Operation | What moves | What is preserved | Command |
+|---|---|---|---|
+| **Rewind** | Filesystem **and** agent state return to step N | Log retained; a `BranchForked` event is appended | `argus rewind --to-step 17` |
+| **Revert** | Filesystem only returns to step N | Agent keeps full memory of what happened | `argus revert --files --to-step 17` |
+| **Replay** | Nothing moves; a projection is recomputed for viewing | Everything | `argus replay --to-step 17` |
+
+This distinction matters enormously in practice. Often you want the *files* back but you want the
+agent to *remember the failure* - that is `revert`, and it is what feeds the Dead-End Ledger.
+
+### 9.2 Rewind Algorithm
+
+```
+1. Resolve target: step number, event id, timestamp, or semantic query
+   ("before the refactor" -> vector search over the step log)
+2. Locate the nearest preceding SnapshotTaken event; obtain its tree hash
+3. Compute the filesystem delta between current tree and target tree
+4. Present the delta to the human for confirmation (unless --force)
+5. Materialise: restore blobs, remove files created after the target
+6. Emit BranchForked; new events append to the new branch
+7. Refold projections from seq 0 to the target on the new branch
+8. Old branch remains fully intact and switchable
+```
+
+Step 8 is why this is *time travel* and not merely *undo*. Nothing is destroyed.
+
+### 9.3 Semantic Time Addressing
+
+Steps are addressable by more than number:
+
+```
+argus rewind --to-step 17
+argus rewind --to "before it touched the migration files"
+argus rewind --to-last-passing
+argus rewind --before-first-failure
+argus rewind --to "2026-07-25T10:14:00"
+argus rewind --to-node "Patch verify_token"
+```
+
+Semantic queries run over the event log's embedded step summaries and return **candidates with
+evidence** for confirmation - never a silent guess. Ambiguity raises a question (axiom A6).
+
+### 9.4 What Cannot Be Rewound
+
+Honesty about the boundary of the guarantee:
+
+| Effect | Reversible | Handling |
+|---|:--:|---|
+| File writes, deletes, moves | yes | Snapshot store |
+| Git commits on shadow branches | yes | Branch deletion |
+| Local database writes | partial | Requires verified dump; refused otherwise |
+| Package installs into the venv | yes | The venv is itself snapshotted |
+| Sent network requests | **no** | Marked `IRREVERSIBLE`; always requires approval |
+| Emails, webhooks, deploys, API mutations | **no** | Blocked by default; explicit unlock + double confirmation |
+| Time, money, other people's systems | **no** | Non-goal; loudly stated |
+
+**The rule:** any tool whose effect escapes the machine is classed `IRREVERSIBLE` and can never
+run at autonomy level L3 or below (22). The Goal Kernel enforces this structurally - it is not
+a prompt instruction.
+
+---
+
+## 10. THE MULTIVERSE: BRANCHING EXECUTION
+
+Because the log is append-only and content-addressed, forking is free. This unlocks a capability
+no terminal agent has: **trying several futures and keeping the best one.**
+
+### 10.1 Branch Model
+
+```
+            /-- branch:cautious --> [23] [24] [25]  PASS  $0.09
+           /
+seq 0 -- 22 ---- branch:direct   --> [23] [24]       FAIL  tests
+           \
+            \-- branch:rewrite  --> [23] [24] [25] [26] PASS $0.31
+```
+
+All three share history through step 22 - stored once. Each branch has its own budget slice, its
+own filesystem materialisation (separate git worktrees), and its own projections.
+
+### 10.2 When Branching Is Used
+
+| Trigger | Branches | Selection criterion |
+|---|:--:|---|
+| Genuinely ambiguous approach at plan time | 2-3 | First to pass all predicates, tie-broken by cost |
+| A node has failed twice | 2 | Different strategy per branch |
+| `DESTRUCTIVE` node | 3 | Consensus (16.4); dissent always surfaced |
+| Human types `argus explore` | N | Human picks, with a side-by-side diff |
+| Benchmark / eval mode | N | Statistical comparison across runs |
+
+### 10.3 Branch Economics
+
+Branching multiplies cost, so it is governed hard:
+
+- Branching requires explicit budget headroom; the governor refuses otherwise.
+- Losing branches are **cancelled the instant a winner satisfies all predicates**, not run to
+  completion.
+- Read-heavy exploration branches use cheap models; only the surviving branch is promoted to a
+  frontier model for the final edit.
+- Default: branching **off** below autonomy L3. It is a power tool, not a default behaviour.
+
+### 10.4 Merge Semantics
+
+A winning branch is merged by **replaying its file mutations onto the main branch's tree**, not
+by copying a working directory. Conflicts are impossible by construction because branches are
+materialised into separate git worktrees and only the diff is transplanted. If the transplant
+does not apply cleanly, the merge is refused and the human is shown both trees.
+
+---
+
+## 11. THE FOLD: STATE AS A PURE FUNCTION OF HISTORY
+
+### 11.1 Projections
+
+A projection is a pure function `(log_prefix) -> state`. Twelve exist; every one is rebuildable
+from scratch at any time.
+
+| Projection | Derived state | Rebuild cost (1,000 events) |
+|---|---|---|
+| `PlanProjection` | The DAG with live node statuses | ~8ms |
+| `MemoryProjection` | L1-L4 tier contents | ~30ms |
+| `FilesystemProjection` | Expected tree hash at each step | ~12ms |
+| `CostProjection` | Spend by node, model, actor, branch | ~4ms |
+| `GoalProjection` | Goal contract, clause states, distance, velocity, drift | ~4ms |
+| `NexusProjection` | Code graph freshness map | ~15ms |
+| `SwarmProjection` | Live agent roster and assignments | ~2ms |
+| `TimelineProjection` | Branch topology | ~2ms |
+| `RenderProjection` | Everything the TUI draws | ~20ms |
+| `AuditProjection` | Human-readable session report | ~25ms |
+| `CalibrationProjection` | Estimate-vs-actual accuracy | ~6ms |
+| `ProvenanceProjection` | Origin of every context chunk that entered a prompt | ~3ms |
+
+Total cold rebuild for a large session: **under 150ms.** Fast enough that projections are simply
+recomputed rather than carefully mutated - which eliminates an entire category of state bugs.
+
+### 11.2 Incremental Folding
+
+In the steady state each projection consumes events incrementally through an
+`apply(state, event)` reducer. Projection snapshots are written every 500 events so cold start
+never rescans the full log. Reducers must be pure and total; this is property-tested (**I1**).
+
+### 11.3 Why This Kills Whole Bug Classes
+
+| Classic agent bug | Why it cannot occur here |
+|---|---|
+| UI shows stale plan status | UI is a projection of the same log; there is no second source |
+| Resumed session lost the last two steps | Resume *is* a fold; the log has them |
+| Cost report disagrees with reality | Both derive from `CostIncurred` events |
+| Agent thinks a file changed but it did not | `FilesystemProjection` hash-verifies against disk |
+| Race between memory write and plan update | Both are folds of an ordered log; no shared mutable state |
+| Cannot reproduce the bug report | Attach the log; replay is byte-identical |
+
+---
+
+## 12. COMPLETE ARCHITECTURE MAP
+
+```
++==============================================================================+
+|                        THE FACE  -  Animated Textual TUI                     |
+|  Plan Constellation - Thought Stream - Diff Theatre - Cost Aurora            |
+|  Nexus Graph View - Branch Multiverse - Approval Modals - Replay Cinema      |
++===============================+==============================================+
+     RenderProjection (read)    |   ^  user intents -> events
++------------------------------ v ---------------------------------------------+
+|                   ***  THE TEMPORAL KERNEL  ***   (Part II)                   |
+|  Causal Event Graph - Merkle Spine - Snapshot Store - Fold Engine - Branches  |
+|  ------------------  every arrow below is an event  ------------------------  |
++--+------+------+------+------+------+------+------+------+------+
+|            THE GOAL KERNEL  (Part VI) - every arrow serves a clause          |
++--+------+------+------+------+------+------+------+------+------+
+   |      |      |      |      |      |      |      |      |
++--v--++--v--++--v--++--v--++--v--++--v--++--v--++--v--++--v--+
+| I   || II  || III || IV  || V   || VI  || VII ||VIII || IX  |
+|COR- ||HIP- ||NEX- ||SWA- ||HAN- ||FOR- ||JUD- ||ROU- ||ORA- |
+|TEX  ||POC. ||US   ||RM   ||DS   ||GE   ||GE   ||TER  ||CLE  |
+|plan ||mem  ||code ||multi||tool ||env  ||veri ||LLM  ||learn|
+|FSM  ||5tier||graph||agent||exec ||repro||pred ||fabr ||loop |
++--+--++--+--++--+--++--+--++--+--++--+--++--+--++--+--++--+--+
+   |      |      |      |      |      |      |      |      |
++--v------v------v------v------v------v------v------v------v------v------v------v+
+|                         THE SUBSTRATE  -  Persistence                           |
+|  JSONL event log (truth) - SQLite WAL (index) - sqlite-vec - CAS object store   |
+|  Shadow git worktrees - Projection snapshots - Cassettes - Goal ledger          |
++---------------------------------------------------------------------------------+
+```
+
+**Read the map this way:** the kernel is the only thing in the middle. Subsystems never talk to
+each other directly - they emit events and consume projections. Any subsystem can therefore be
+replaced, tested in isolation, or run in a separate process without touching the others.
+
+---
+---
+
+# PART III - THE NINE SUBSYSTEMS
+
+## 13. I - CORTEX - ORCHESTRATION
+
+### 13.1 The Ten-State Machine
+
+| State | Rung (5) | Responsibility | Exit |
+|---|:--:|---|---|
+| `PERCEIVE` | 1-4 | Environment digest: git state, dirty files, running processes, Forge status, prior memory | Digest event emitted |
+| `ORIENT` | 4-5 | Retrieve relevant Nexus slice, memory, dead ends, skills | Context assembled |
+| `PLAN` | 8 | Produce a typed DAG; each node carries a predicate and cost estimate | Schema-valid plan |
+| `GROUND` | 1-4 | Real preconditions checked against the real environment: paths exist, binaries installed, git clean, budget available | Grounding report |
+| `DELEGATE` | 3 | Assign nodes to roles; compute the parallel frontier | Assignments made |
+| `ACT` | 1-3 | Execute exactly one tool call, fully instrumented | Return / timeout / cancel |
+| `OBSERVE` | 1-3 | Normalise, structure, cap, index output | Observation persisted |
+| `VERIFY` | 1-4 | Run the node predicate deterministically | Pass or structured Failure |
+| `REFLECT` | 8 | Diagnose, amend the DAG, branch, or escalate | New plan or handoff |
+| `CONSOLIDATE` | 6-7 | Compact into episodic memory; extract facts, dead ends, skills | Memory written |
+
+**Eight of ten states run at rung 4 or below.** Only `PLAN` and `REFLECT` require a frontier
+model. This ratio is what makes the system affordable and debuggable.
+
+### 13.2 The Plan DAG - Full Node Schema
+
+```
+Node
+ |- id, branch, parent_id, depth, created_by
+ |- goal              : natural-language intent
+ |- kind              : READ | WRITE | EXEC | VERIFY | ASK | RESEARCH | REFACTOR
+|- predicate         : PredicateSpec - machine-checkable (19)
+ |- depends_on        : [node_id] - defines the parallel frontier
+ |- path_set          : callable -> set[Path] - write-exclusivity key
+ |- risk              : SAFE | GUARDED | DESTRUCTIVE | IRREVERSIBLE
+|- autonomy_required : L0-L5 (22)
+ |- est_cost_usd      : router forecast
+ |- est_steps         : budget slice
+ |- est_seconds       : calibrated forecast
+ |- actual_*          : filled on completion -> feeds calibration
+ |- status            : PENDING RUNNING PASSED FAILED SKIPPED ROLLED_BACK BRANCHED
+ |- attempts          : [attempt records, including failed branches]
+ `- artifacts         : [paths, diffs, snapshot refs, scout reports]
+```
+
+### 13.3 Plan Search (Test-Time Compute)
+
+Beyond single-shot planning, the Cortex can *search* over plans when a node's risk or cost
+justifies it:
+
+| Strategy | When | Mechanism |
+|---|---|---|
+| **Single-shot** | Default, `SAFE` nodes | One frontier call |
+| **Best-of-N** | `GUARDED` nodes | N=3 plans, ranked by real grounding checks and goal-distance gain per dollar |
+| **Beam search** | Complex multi-step refactors | Width 3, depth 4, pruned by real precondition failures |
+| **Consensus** | `DESTRUCTIVE` nodes | N=3 across *different providers*, dissent surfaced |
+
+Critically, candidate plans are ranked by **real environment probes and the goal-distance
+LLM. Cheap deterministic scoring is what makes search affordable at all.
+
+### 13.4 Loop, Thrash and Oscillation Detection
+
+| Detector | Signal | Action |
+|---|---|---|
+| **Exact repeat** | `hash(tool, canonical_args)` seen 3x in 10 steps | Force `REFLECT` with the repetition as evidence |
+| **Semantic thrash** | Cosine similarity of last 5 reasoning traces > 0.94 | Escalate model tier once, then ask the human |
+| **Oscillation** | File content hash flips A-B-A-B | Hard stop; present both versions for a human decision |
+| **Predicate churn** | Same predicate fails 3x with different fixes | Branch (10) instead of retrying linearly |
+| **Cost slope** | Spend rate exceeds 3x the plan forecast | Pause and re-forecast |
+| **Silence** | No event for 120s | Health probe; kill and retry the hung tool |
+
+### 13.5 Hierarchical Budget Governor
+
+```
+run_budget
+  |- max_steps: 200     max_usd: 3.00     max_wall: 45m
+  |- max_tokens: 4M     max_files: 80     max_parallel: 8
+  `- subtree slices
+       |- node A subtree: 40% -> $1.20
+       |    `- scout x4: 5% each -> $0.06 each (hard cap, cannot borrow)
+       `- node B subtree: 60% -> $1.80
+```
+
+A runaway sub-agent **cannot** consume the parent's budget. Breaching any axis **pauses** - never
+silently kills - emits `BudgetExceeded`, and prompts the human to extend, re-scope, or stop.
+
+### 13.6 Interruption and Crash Semantics
+
+| Signal | Behaviour |
+|---|---|
+| `Ctrl-C` | Cancels the **current tool call** (SIGTERM, 3s grace, SIGKILL). Terminal session survives. Returns to prompt. |
+| `Ctrl-C` x2 | Pauses the run, writes a resume point, exits cleanly |
+| `Ctrl-Z` | Suspends to background daemon mode; `argus attach` reconnects |
+| `SIGTERM` | Graceful: finish the current event, fsync, emit `SessionPaused` |
+| `SIGKILL` / power loss | Next launch detects an unclean session, refolds, reports the in-flight step, offers `resume` / `rewind` / `abandon` |
+| Terminal disconnect | Agent continues in daemon mode; reattach later |
+
+---
+
+## 14. II - HIPPOCAMPUS - MEMORY
+
+Most agent quality is memory quality. This subsystem gets the most engineering attention after
+the kernel itself.
+
+### 14.1 Five Tiers
+
+| Tier | Contents | Lifetime | Storage | In prompt |
+|---|---|---|---|---|
+| **L0 Identity** | Constitution, **goal contract**, tool schemas, role brief | Immutable per session | Cached prefix | Always |
+| **L1 Working** | Active node, last N observations, open diffs, current file window | Sliding | RAM + prompt | Always |
+| **L2 Episodic** | Structured records of closed nodes, decisions, **dead ends** | Session | Log + vectors | Retrieved |
+| **L3 Semantic** | Nexus slice, conventions, learned project facts | Cross-session | `.argus/memory/` | Retrieved |
+| **L4 Procedural** | Reusable task recipes distilled from successes | Global | `~/.argus/skills/` | Trigger-matched |
+
+### 14.2 Structured Compaction - Not Summarisation
+
+At 55% window utilisation, closed nodes compress into **records**, never prose:
+
+```
+EpisodeRecord
+ |- goal      : "make auth middleware reject expired JWTs"
+ |- approach  : "added exp claim check in verify_token()"
+ |- actions   : [(tool, args_digest, outcome)] x N
+ |- outcome   : PASSED
+ |- artifacts : ["src/auth/jwt.py", "snapshot:7f3a2c"]
+ |- facts     : ["project pins PyJWT 2.8", "tests live in tests/unit/"]
+ |- lesson    : "PyJWT 2.x uses leeway, not clock_skew"
+ |- dead_ends : ["python-jose - not a dependency; do not retry"]
+ `- cost      : $0.031, 14 steps, 92s
+```
+
+**Why records beat prose:** prose summaries systematically lose *negative* information. "I tried
+X and it failed because Y" gets summarised into "worked on X." The negative is precisely what
+prevents the 40-step retry spiral. Records preserve it in a queryable field.
+
+### 14.3 The Dead-End Ledger
+
+A dedicated, always-retrieved store of what did **not** work, with signatures and reasons.
+
+| Field | Purpose |
+|---|---|
+| `signature` | Canonical hash of the approach (tool + normalised args + target) |
+| `scope` | node / session / project / global |
+| `reason` | The structured Failure that produced it |
+| `confidence` | Definitively wrong, or wrong only in this context? |
+| `expires` | Some dead ends stop being dead when the environment changes |
+
+**Enforcement is deterministic (rung 1).** Before any `ACT`, the candidate action's signature is
+checked against the ledger in Python. A match is *blocked*, not merely discouraged in a prompt.
+The agent is told why and must choose differently. This is the difference between a guideline
+and a guarantee.
+
+### 14.4 Retrieval Pipeline
+
+```
+query
+  |- 1. Lexical      BM25 over symbols, docs, episode records
+  |- 2. Dense        local sentence-transformers -> sqlite-vec ANN
+  |- 3. Graph        one-hop expansion in the Nexus around every hit
+  |- 4. Temporal     boost recently-touched and recently-failed items
+  |- 5. Rerank       cross-encoder or local small model
+  |- 6. Budget       hard token cap; drop lowest-scoring until it fits
+  `- 7. Attribute    every chunk carries provenance + source event id
+```
+
+Step 7 matters: retrieved context is **tagged**, so if a decision later proves wrong, the audit
+trail shows exactly which retrieved chunk misled the model.
+
+By default no source code leaves the machine for embedding. Opt-in only, and the opt-in is itself
+recorded as an event.
+
+### 14.5 Skill Distillation (L4)
+
+After a successful run the Oracle drafts a candidate skill: triggers, ordered steps, verification.
+Skills are plain Markdown a human can read, edit, delete, and version-control. They are never
+auto-applied without a trigger match, and never auto-promoted - a human must approve a skill
+before it becomes globally active.
+
+---
+
+## 15. III - NEXUS - THE CODE PROPERTY GRAPH
+
+This subsystem is what separates "an LLM with grep" from something that actually understands a
+codebase.
+
+### 15.1 What Is Built
+
+| Layer | Source | Content |
+|---|---|---|
+| **Symbols** | `ast` (Python), tree-sitter (30+ langs) | Every def/class/const with signature, span, docstring |
+| **Types** | LSP (pyright, mypy, tsserver, rust-analyzer) | Resolved types at every position - real inference, not guessing |
+| **Call graph** | Symbol resolution + LSP references | Who calls whom, transitively |
+| **Data flow** | Static analysis | Where a value originates and where it reaches |
+| **Import graph** | Static | Module dependencies, cycle detection |
+| **Test map** | Coverage instrumentation | Which tests exercise which lines - enables `test.focus` |
+| **Ownership** | `git log` | Last toucher, churn rate, hotspots |
+| **Centrality** | PageRank over the reference graph | Which files actually matter |
+| **Conventions** | Statistical inference | Naming, error handling, test layout, import style |
+| **Runtime shapes** | Optional tracing runs | Actual observed types and values at key call sites |
+
+### 15.2 The Killer Query: Impact Analysis
+
+> *"If I change the signature of `verify_token`, what breaks?"*
+
+A grep-based agent answers by searching for the string and hoping. The Nexus answers with a
+**graph traversal at rung 4** - deterministic, complete, free:
+
+```
+impact(symbol) ->
+  |- direct callers       : 7 sites across 4 files
+  |- transitive callers   : 23 sites, depth <= 3
+  |- tests covering them  : 11 tests (via the coverage map)
+  |- public API exposure  : yes - exported in __init__.py
+  |- type-level consumers : 3 Protocol implementations
+  `- risk score           : HIGH - public + high centrality + low coverage
+```
+
+This single capability changes planning quality more than any prompt engineering. The planner
+knows the blast radius **before** it writes a line.
+
+### 15.3 LSP Integration - Real Semantics
+
+ARGUS runs language servers as subprocesses and speaks LSP to them. Deterministically, for free:
+
+| LSP capability | Agent superpower |
+|---|---|
+| `textDocument/definition` | Jump to the *correct* definition among six same-named functions |
+| `textDocument/references` | Complete, type-aware usage list |
+| `textDocument/hover` | Real inferred types, not guessed ones |
+| `textDocument/diagnostics` | Compile and type errors *before* running anything |
+| `textDocument/rename` | Semantically safe rename across the repo |
+| `workspace/symbol` | Fuzzy symbol search across the whole project |
+| `textDocument/codeAction` | The IDE's own suggested fixes, applied deterministically |
+
+**Impact:** most "the agent edited the wrong function" failures disappear. The agent stops
+guessing which `process()` was meant - it asks the language server.
+
+### 15.4 DAP Integration - The Agent Can Actually Debug
+
+Via the Debug Adapter Protocol, ARGUS can do what a human engineer does when confused:
+
+1. Set a breakpoint at the suspected line.
+2. Run the failing test under the debugger.
+3. Inspect actual variable values, the call stack, and the exception chain.
+4. Step through execution.
+5. Evaluate expressions in the live frame.
+
+Instead of hypothesising about why `token` is `None`, the agent **looks**. Runtime facts enter
+context as `EnvironmentProbed` events with full provenance. This is arguably the largest single
+available improvement to debugging accuracy, and almost nobody does it.
+
+### 15.5 Incremental Maintenance
+
+- `watchdog` file events trigger partial reindex of the changed file plus one-hop neighbours.
+- Each node is keyed by content hash; unchanged files are never reparsed.
+- Cold build for a 100k-file monorepo uses a `ProcessPoolExecutor` across all cores.
+- The index is persisted; a second launch on the same repo is warm in under 200ms.
+- Staleness is tracked per node and surfaced in the TUI - the agent knows what it does not know.
+
+**Targets:** warm incremental reindex under 50ms; cold 100k-file build under 25s; impact query
+under 15ms.
+
+---
+
+## 16. IV - SWARM - MULTI-AGENT SOCIETY
+
+### 16.1 The Golden Rule
+
+> **Reads fan out. Writes serialise.**
+
+Parallelism is free on reads and catastrophic on writes. Enforced at the **type level**: a node
+with `kind=WRITE` can never be scheduled concurrently with another `WRITE` whose `path_set`
+intersects. Property-tested as invariant **I7**.
+
+### 16.2 The Seven Roles
+
+| Role | Model tier | Concurrency | Permissions | Purpose |
+|---|---|:--:|---|---|
+| **Sovereign** | Frontier | 1 | Full | Owns the DAG; makes every irreversible decision |
+| **Scout** | Fast mid | up to 8 | Read-only, no network | Explore, gather evidence, answer questions |
+| **Surgeon** | Frontier | 1 at a time | Write, scoped to a path allowlist | Performs all edits |
+| **Auditor** | Mid | 1-2 | Read-only | Independently reviews the Surgeon's diff |
+| **Librarian** | Local small | Background | Read-only | Maintains Nexus, embeddings, memory hygiene |
+| **Navigator** | Local small | Always-on | None | Continuously measures goal distance and flags drift (Part VI) |
+| **Historian** | Local small | On demand | Log read-only | Answers "what happened and why" from the event graph |
+
+### 16.3 Context Isolation - Why the Swarm Is Cheap
+
+Each scout gets a **fresh, minimal context**: its question, the relevant Nexus slice, read-only
+tools. It returns a **structured report**, not a transcript.
+
+```
+ScoutReport
+ |- question, confidence : 0.0-1.0
+ |- answer              : structured, <= 400 tokens
+ |- evidence            : [file:line -> quoted span, with event ids]
+ |- uncertainties       : [what it could not determine]
+ |- dead_ends_found     : [contributed to the ledger]
+ `- cost_usd, elapsed_ms
+```
+
+Eight scouts therefore cost roughly what one bloated conversation costs - and **none of them
+pollute the Sovereign's context.** The Sovereign receives eight small structured reports rather
+than eight thousand lines of file dumps. That is the entire economic argument for the swarm.
+
+### 16.4 Consensus for High-Risk Nodes
+
+For `DESTRUCTIVE` nodes, N=3 independent evaluations, ideally across **different providers**:
+
+| Agreement | Action |
+|---|---|
+| 3 of 3 | Proceed - still subject to snapshot, budget, and autonomy level |
+| 2 of 3 | Proceed **only** with human approval; the dissent is shown verbatim |
+| No majority | Halt; present all three reasonings side by side; ask |
+
+**Dissent is always displayed.** Averaging away disagreement is how automation destroys things.
+A minority opinion on a destructive action is signal, not noise.
+
+### 16.5 Scheduler
+
+```
+loop:
+  frontier = nodes whose depends_on are all PASSED
+  eligible = frontier filtered by:
+              - write-exclusivity (path_set disjointness)
+              - budget slice availability
+              - autonomy level permission
+              - max_parallel cap
+  launch eligible in an asyncio.TaskGroup with per-task timeouts
+  gather; fold results into the DAG as events
+  cancel siblings if a branch winner is decided
+```
+
+Cancellation propagates cleanly through the whole tree. A cancelled scout's partial work is still
+logged - nothing is wasted, because the log keeps everything.
+
+---
+
+## 17. V - HANDS - TOOLS AND EFFECTORS
+
+### 17.1 The Tool Contract
+
+Every tool is a Pydantic-typed async Python function. JSON schemas are **generated**, never
+hand-written, so schema drift is structurally impossible.
+
+```
+Tool metadata (used by scheduler, router, budget governor, goal kernel)
+ |- risk_level       : SAFE | GUARDED | DESTRUCTIVE | IRREVERSIBLE
+ |- is_idempotent    : bool
+ |- is_reversible    : bool
+ |- touches_paths    : callable(args) -> set[Path]
+ |- requires_network : bool
+ |- min_autonomy     : L0-L5
+ |- timeout_s        : int
+ |- cost_hint        : cheap | moderate | expensive
+ |- output_cap       : bytes, with smart head/tail retention
+`- preflight        : callable(args) -> PreflightReport  (real probes, never guesses)
+```
+
+That last field is unusual and important: **every tool knows how to predict its own effect
+without performing it.** That is what makes dry-run possible at all.
+
+### 17.2 The Arsenal - 41 Tools in 8 Families
+
+**Shell (4)**
+
+| Tool | Detail |
+|---|---|
+| `shell.run` | PTY-backed, true streaming, cancellable, ANSI-preserving, capped |
+| `shell.interactive` | Persistent PTY for REPLs, ssh, psql, vim - real multi-turn interaction |
+| `shell.background` | Long-running processes with log tailing and lifecycle management |
+| `shell.which` | Deterministic capability probing before attempting anything |
+
+**Filesystem (7)**
+
+| Tool | Detail |
+|---|---|
+| `fs.read` | Line-ranged, encoding-aware, binary-detecting |
+| `fs.write` | Atomic temp+rename; always snapshotted first |
+| `fs.patch` | Exact-match replace with uniqueness enforcement and fuzzy-fail diagnostics |
+| `fs.multipatch` | **Transactional** multi-file edit - all apply or none do |
+| `fs.search` | ripgrep wrapper returning structured file/line/col/match/context |
+| `fs.tree` | Gitignore-aware, depth-limited, size-annotated |
+| `fs.stat` | Metadata without reading content |
+
+**Code intelligence (8)** - all rung 2-4, all deterministic
+
+| Tool | Detail |
+|---|---|
+| `code.symbols` | AST/tree-sitter lookup - precise and vastly cheaper than grep |
+| `code.references` | LSP-backed complete usage list |
+| `code.definition` | Jump to the correct definition, type-resolved |
+| `code.impact` | The killer query (15.2) |
+| `code.refactor` | Rope + LSP semantic rename / extract / move / inline |
+| `code.lint` | ruff / mypy / eslint adapters returning structured diagnostics |
+| `code.format` | Idempotent; never mixed into logic diffs |
+| `code.trace` | Run under a tracer; capture real runtime types and values |
+
+**Version control (7)**
+
+| Tool | Detail |
+|---|---|
+| `git.status` `git.diff` `git.log` `git.blame` | Structured output, never text parsing |
+| `git.commit` `git.branch` `git.stash` | Scoped to shadow branches by default |
+| `git.worktree` | Branch materialisation for the multiverse (10) |
+| *guarded* | force-push to protected refs, history rewrite, and hard reset require explicit approval |
+
+**Execution and validation (6)**
+
+| Tool | Detail |
+|---|---|
+| `test.run` | Auto-detects pytest/jest/go/cargo/gradle; parses JUnit XML into structured failures |
+| `test.focus` | Runs only tests touching changed symbols via the coverage map - often 50x faster |
+| `test.debug` | DAP-driven breakpoint debugging of a failing test (15.4) |
+| `bench.run` | Performance gate with baseline comparison |
+| `pkg.install` | Venv-locked, network-gated, lockfile-aware |
+| `db.query` | Read-only by default; writes require explicit unlock plus verified dump |
+
+**Environment (4)** - see 18: `forge.probe`, `forge.materialise`, `forge.snapshot`, `forge.diff`
+
+**External (3)** - `net.fetch` (domain-allowlisted, content marked untrusted), `net.search`,
+`mcp.*` (any MCP server, capability-negotiated)
+
+**Human (2)** - `human.ask` (structured question, typed options, TUI modal), `human.approve`
+(diff-attached, per-hunk granularity)
+
+### 17.3 Output Discipline
+
+Raw output never enters context. Every observation passes a normaliser:
+
+1. Strip ANSI, normalise line endings, detect encoding, detect binary.
+2. Cap at `output_cap` with **head plus tail retention** and an explicit elision marker.
+3. Extract structure: test failures, tracebacks, diff hunks, compiler errors into typed objects.
+4. Store the **full** output in the CAS; put only the structured digest in the prompt.
+5. Expose `observation.expand(id, range)` so the agent can pull more if it genuinely needs it.
+
+A 40,000-line test log becomes a 300-token structured failure summary with the full log one
+deterministic call away. This alone can cut token spend by an order of magnitude on noisy repos.
+
+---
+
+## 18. VI - FORGE - ENVIRONMENT REPRODUCIBILITY
+
+The most ignored failure mode in the entire category: **the agent fixes a bug that only exists in
+its own environment.**
+
+### 18.1 The Environment Digest
+
+On `PERCEIVE`, the Forge hashes everything that can change behaviour:
+
+```
+EnvironmentDigest
+ |- os, arch, kernel, libc
+ |- python version + implementation + build flags
+ |- resolved dependency tree (from lockfile, hashed)
+|- relevant env vars (allowlisted)
+ |- locale, timezone, encoding defaults
+ |- available toolchain versions (git, node, docker, compilers)
+ |- filesystem case sensitivity, path separator, line endings
+ `- digest = blake3(all of the above)
+```
+
+This digest is an event. Every observation is implicitly stamped with the environment that
+produced it. When a bug reproduces on one machine and not another, the diff between two digests
+is a single command: `argus forge diff <session-a> <session-b>`.
+
+### 18.2 Reproducible Materialisation
+
+| Mode | Mechanism | Guarantee |
+|---|---|---|
+| `native` | Current environment, digest recorded | None - but at least it is known |
+| `venv` | Isolated virtualenv from lockfile | Dependency reproducibility |
+| `container` | Devcontainer / Dockerfile, digest-pinned | Full OS-level reproducibility |
+| `ephemeral` | Fresh container per node | Perfect isolation; slowest |
+
+Branches (10) each get their own materialisation, which is why two branches can install
+conflicting dependencies without interfering with each other.
+
+### 18.3 Environment as a Rewindable Resource
+
+Because the venv and lockfile live inside the snapshot store, `argus rewind` also restores the
+**dependency state**. An agent that installed a wrong package at step 12 is fully undone at step
+12 - including the package. No other agent does this.
+
+### 18.4 Drift Detection
+
+The Librarian re-probes the environment periodically. Any mid-session change emits
+`EnvironmentProbed` with a delta, and observations recorded before the change are marked
+**stale**. The Judge refuses to accept a `PASSED` predicate whose evidence predates a material
+environment change - it re-runs it.
+## 19. VII - JUDGE - VERIFICATION
+
+> A node cannot enter `PASSED` on the model's own testimony. Ever. (Invariant I4.)
+
+### 21.1 Predicate Types, In Priority Order
+
+| Type | Example | Rung |
+|---|---|:--:|
+| **Exit code** | `pytest -q` returns 0 | 3 |
+| **File assertion** | Path exists, parses as valid YAML, matches a regex | 1 |
+| **AST assertion** | `verify_token` exists with parameter `leeway` | 2 |
+| **Type assertion** | mypy/pyright reports zero new errors | 3 |
+| **Diff assertion** | Only whitelisted files touched; no `print(` or `TODO` introduced | 1 |
+| **Graph assertion** | No new import cycle; centrality unchanged | 4 |
+| **Coverage delta** | New code is covered by at least one test | 3 |
+| **Property test** | Hypothesis-generated cases for pure functions | 3 |
+| **Performance gate** | Benchmark within 10 percent of baseline | 3 |
+| **Runtime assertion** | DAP inspection confirms the expected value at a breakpoint | 3 |
+| **Semantic diff** | Behaviour unchanged for untouched code paths | 5 |
+| **LLM rubric judge** | *Last resort*, prose only, rubric-scored, second-model cross-check | 8 |
+
+Strictly top-down. An LLM judge is used only when nothing deterministic applies. In a typical
+coding run, zero LLM judges are invoked.
+
+### 21.2 Structured Failure
+
+Verification failure never dumps a raw traceback into the prompt. It produces:
+
+```
+Failure
+|- kind           : ASSERTION | EXCEPTION | TIMEOUT | REGRESSION | FLAKE | ORPHAN
+ |- evidence       : minimal reproducing excerpt (<= 300 tokens)
+ |- location       : file:line, symbol, resolved via the Nexus
+ |- delta          : what changed versus the last passing state
+ |- runtime_facts  : real values from DAP inspection, when available
+ |- hypotheses     : ranked candidate causes
+ `- suggested_next : concrete next action
+```
+
+This is the difference between an agent that debugs and an agent that flails.
+
+### 21.3 Flake Detection
+
+A failing test is re-run before being believed. If it fails only sometimes, it is classified
+`FLAKE`, recorded as a project fact, and excluded from the pass criteria with a visible warning.
+Agents that treat flakes as real bugs waste enormous amounts of money chasing ghosts.
+
+### 21.4 The Auditor Pass
+
+Every `WRITE` node's diff is reviewed by an Auditor agent that has **no knowledge of the
+Surgeon's reasoning** - only the goal and the diff. It checks for: scope creep, deleted or
+weakened tests, swallowed exceptions, hardcoded values, debug residue, commented-out code,
+and behaviour changes outside the stated goal. Auditor objections block the node and emit
+`AuditorObjected`.
+
+Blind review is the point. An auditor that reads the surgeon's justification is not an auditor.
+
+### 21.5 Regression Shield
+
+Before declaring the *run* complete, ARGUS re-runs the full suite plus every test that was passing
+at run start. A newly broken test unrelated to the goal is a **failure of the entire run**, not an
+acceptable side effect. `RegressionDetected` is emitted and the run cannot close successfully.
+
+---
+
+## 20. VIII - ROUTER - THE MODEL FABRIC
+
+### 23.1 Routing Matrix
+
+| Workload | Tier | Rationale |
+|---|---|---|
+| `PLAN`, `REFLECT`, debugging, architecture | Frontier reasoning | Highest leverage per token |
+| Surgeon edits | Frontier or strong mid | Correctness-critical |
+| Scout exploration | Fast mid | 10-30x cheaper, high volume |
+| Auditor review | Mid | Independent but not expensive |
+| Summarisation, compaction | Fast mid | Mechanical |
+| Classification, routing, clause matching, Navigator, Historian | Local small | Zero cost, zero egress |
+| Embeddings | Local sentence-transformers | Privacy default |
+
+### 23.2 Capabilities
+
+- **Streaming with incremental tool-call parsing** - the TUI shows the tool name before its
+  arguments have finished arriving.
+- **Prompt caching** - the stable L0 plus L3 prefix is cached provider-side where supported.
+  Measured 60-80 percent cost reduction on long sessions.
+- **Speculative prefetch** - while a human reviews a diff, the router pre-warms the likely next
+  step. Discarded if the human diverges. Latency hidden behind human think-time is free latency.
+- **Failover chains** - outage, rate limit, or content filter triggers automatic failover with
+  exponential backoff and jitter, emitting `ProviderFailedOver`.
+- **Cassette replay** - every request/response pair is recorded as an event. A session replays
+  against the cassette with zero API cost, which is how the test suite runs.
+- **Full offline mode** - the whole pipeline runs on local weights. Degraded quality, zero egress,
+  works on a plane.
+
+### 23.3 Cost Accounting
+
+Per-step, per-agent, per-provider, per-branch token and USD accounting, derived from
+`CostIncurred` events. The TUI shows a live meter. `argus cost --session <id> --by node` produces
+a full breakdown. Because it is a projection of the same log, the report can never disagree with
+reality.
+
+---
+
+## 21. IX - ORACLE - SELF-IMPROVEMENT
+
+No model training. No fine-tuning. Improvement through **structured accumulated experience**,
+mined from the event log corpus.
+
+### 24.1 Post-Run Analysis
+
+| Question | Output |
+|---|---|
+| Which steps were wasted? | Efficiency score, wasted-token count |
+| Which dead ends were hit? | Appended to the ledger with scope and confidence |
+| Which project facts were learned? | Written to `.argus/memory/facts.md` - human-readable, git-trackable |
+| Was there a reusable pattern? | Candidate skill drafted for human approval |
+| Where did the plan diverge from reality? | Calibration data |
+| Which retrieved chunks were actually used? | Retrieval quality signal |
+| Which prompts underperformed? | Prompt eval data (36) |
+
+### 24.2 Calibration
+
+ARGUS tracks its own forecast accuracy - estimated versus actual steps, cost, and duration, per
+node kind. Over time the planner's estimates converge, which makes budgets meaningful rather than
+arbitrary. Calibration curves are visible in `argus stats`.
+
+**This is real self-improvement without training:** the system's *predictions* get measurably
+better because it has a ground-truth record of every prediction it ever made.
+
+### 24.3 Cross-Session Corpus Mining
+
+With hundreds of logged sessions, the Oracle can answer questions about the agent itself:
+
+- Which tools have the highest failure rate, and on which repos?
+- Which predicate types catch the most real bugs?
+- Which clause kinds regress most often, and what proof types catch them?
+- What is the actual distribution of task cost, and where is the long tail?
+- Which model tier is over-provisioned for which workload?
+
+These answers drive the roadmap with data instead of intuition.
+
+### 24.4 The Constitution
+
+A user-editable Markdown file (`~/.argus/constitution.md`) always present in L0. It encodes
+standing rules: *never touch `migrations/` without asking*, *this project uses tabs*, *always run
+`make check` before declaring done*. Human-authored, human-owned, **never auto-modified**. The
+Oracle may *propose* an amendment; only a human may accept it.
+
+---
+
+## 22. CROSS-CUTTING: THE AUTONOMY LADDER
+
+Trust is not binary. Six levels, switchable mid-session with a single keystroke.
+
+| Level | Name | Agent may | Human must |
+|:--:|---|---|---|
+| **L0** | Observer | Read, analyse, explain. No mutation of any kind. | Nothing |
+| **L1** | Advisor | Propose diffs; nothing is applied | Apply manually |
+| **L2** | Assistant | Apply diffs after per-hunk approval | Approve every hunk |
+| **L3** | Collaborator **(default)** | Apply `SAFE` and `GUARDED` freely; snapshot always | Approve `DESTRUCTIVE` |
+| **L4** | Pilot | Also branch, run consensus, self-correct without asking | Approve `IRREVERSIBLE` only |
+| **L5** | Autonomous | Run to completion unattended within budget | Review the final report |
+
+**Hard rules that no level can override:**
+- `IRREVERSIBLE` tools always require explicit human approval, at every level including L5.
+- An anti-clause violation is never overridden by autonomy level.
+- Snapshots are taken at every level, including L0 (which takes none because it writes nothing).
+- Level changes are events, so the audit trail always shows what freedom the agent had, when.
+
+**Why this matters:** most agents force a choice between "useless" and "terrifying." The ladder
+lets trust be earned incrementally on a specific repo, and lowered instantly when the agent is in
+unfamiliar territory.
+
+---
+---
+
+# PART IV - THE FACE
+
+> Most agents show you a spinner. ARGUS shows you a **mind at work.**
+
+## 23. INTERFACE PHILOSOPHY
+
+Five rules, all enforced in design review:
+
+1. **Every animation carries information.** Decoration without meaning is banned. If a motion
+   does not encode state, it is deleted.
+2. **The eye supervises, not the reader.** Peripheral vision should catch a problem before you
+   consciously read anything. Colour, motion, and rhythm do the work.
+3. **Nothing is hidden.** Plan, cost, diff, reasoning, provenance, and autonomy level are always
+   on screen or one keystroke away.
+4. **The interface is a projection.** It renders `RenderProjection` and nothing else. It holds no
+   authoritative state, so it can never disagree with the agent.
+5. **Rendering is lossy; history is not.** Under load the TUI drops frames. The log never drops
+   an event.
+
+Built on **Textual**, targeting a steady **60fps** in a plain terminal with no GPU, using
+damage-region diffing so only changed cells repaint.
+
+## 24. LAYOUT AND PANELS
+
+```
++------------------------------------------------------------------------------------+
+| # ARGUS-W  7f3a | balanced | L3 Collaborator | opus->haiku | branch:main | 04:12    |
++---------------------------+------------------------------------+-------------------+
+|  PLAN CONSTELLATION       |  THOUGHT STREAM                    | LIVE DIFF THEATRE |
+|                           |                                    |                   |
+|  (*) Understand auth flow |  > code.impact verify_token        | src/auth/jwt.py   |
+|   |  `- oooo 4 scouts ok  |    +----------------------------+  |  40 |             |
+|  (*) Locate expiry check  |    | 7 direct callers, 23       |  |  41 |- if not tok:|
+|  (o) Patch verify_token   |    | transitive, 11 tests cover |  |  42 |+ if tok is  |
+|   |  `- > surgeon working |    | it. Public API: YES.       |  |  43 |+   raise .. |
+|  ( ) Add regression test  |    | Risk: HIGH                 |  |     |             |
+|  ( ) Run focused suite    |    +----------------------------+  | +3 -1 . 1 file    |
+|  ( ) Auditor review       |                                    |                   |
+|  ( ) Regression shield    |  > snapshot 7f3a2c taken           | [a]ccept [r]eject |
+|                           |  > fs.patch applied                | [e]dit  [d]etail  |
+|  branches: main  cautious |  > test.focus tests/auth ...       |                   |
++---------------------------+------------------------------------+-------------------+
+| ##########..........  47% | $0.42/$3.00 | ^3.1k v890 t/s | 23/200 | 8 scouts | REC  |
++------------------------------------------------------------------------------------+
+```
+
+### 27.1 Panel Inventory
+
+| Panel | Purpose | Toggle |
+|---|---|---|
+| Plan Constellation | The live DAG (28.2) | `1` |
+| Thought Stream | Reasoning, tool calls, observations | `2` |
+| Diff Theatre | Per-hunk review (27.3) | `3` |
+| Nexus Graph | Call graph and impact around the current symbol | `4` |
+| Multiverse | Branch topology with per-branch cost and status | `5` |
+| Timeline Scrubber | Step-by-step history with rewind targets | `6` |
+| Goal Compass | Live clause table, distance, velocity, focus history (§43) | `7` |
+| Cost Breakdown | Spend by node, model, actor | `8` |
+| Log Inspector | Raw event stream, filterable | `9` |
+
+### 27.2 The Plan Constellation
+
+The DAG is not a flat checklist. It is a living tree:
+
+- Node **size** encodes estimated cost; **colour** encodes status; **pulse rate** encodes activity.
+- Edges are drawn with box characters and **animate** as dependencies resolve.
+- Parallel scouts render as satellites orbiting their parent node.
+- Collapsed subtrees show an aggregate progress ring.
+- Focusing a node reveals its predicate, cost forecast versus actual, risk class, and artifacts.
+- A node blocked by the Dead-End Ledger shows a distinct barred glyph with the reason on focus.
+
+### 27.3 Diff Theatre
+
+- Syntax-highlighted unified diffs with **per-hunk** accept / reject / edit.
+- Side-by-side on wide terminals, unified on narrow, automatically.
+- Semantic highlighting: pure renames are coloured differently from real logic changes.
+- Rejecting a hunk triggers an immediate rollback animation and re-plans that node.
+- A minimap gutter shows every changed file in the run with change density.
+- Auditor objections appear inline, attached to the offending hunk.
+
+### 27.4 Ambient Instrumentation
+
+The bottom bar is a permanent glanceable dashboard: progress, USD spent versus budget as a
+gradient, live token throughput, step count, active scout count, forge mode, autonomy level,
+recording indicator, elapsed time. Peripheral vision supervises so you do not have to read.
+
+## 25. THE MOTION DESIGN LANGUAGE
+
+| Element | Animation | Meaning |
+|---|---|---|
+| **Node ignition** | Radial glyph bloom over 240ms, ease-out-cubic | A plan node just started |
+| **Node completion** | Colour sweep left to right plus checkmark pop | Predicate passed |
+| **Node failure** | Three-frame horizontal shake, amber to red hold | Predicate failed |
+| **Scout dispatch** | Particles emit from the parent node outward | N parallel agents launched |
+| **Scout return** | Particles converge back, node pulses once | Reports merged |
+| **Thought stream** | Character-by-character with a soft cursor | Model is generating right now |
+| **Diff reveal** | Line-by-line cascade, 12ms stagger, green fade-in | Change being applied |
+| **Cost aurora** | Bottom-bar gradient shifts cyan to amber to red | Budget depletion, peripheral |
+| **Token flow** | Up/down arrows pulsing at true tokens per second | Throughput is live, not frozen |
+| **Verification** | Concentric ring sweep outward from the node | The Judge is running |
+| **Rewind** | Full-screen scanline sweep upward, content reverting | Time is moving backward |
+| **Branch fork** | The constellation splits, one path dims | The multiverse opened |
+| **Branch merge** | Two paths converge with a light flare | A winner was promoted |
+| **Anti-clause broken** | Red border flash, freeze frame, halt glyph | The run stopped itself |
+| **Orphan action** | The action card is pushed back with a barred glyph | No clause claimed it |
+| **Dead-end block** | Barred glyph with a short backward nudge | The ledger prevented a repeat |
+| **Idle breathing** | Four-second sine opacity on the header glyph | The agent is alive, waiting |
+
+Every animation is skippable, reducible via `--reduced-motion`, and fully disabled in
+`--headless`. Frame budget is enforced: if a frame would exceed 16ms, the animation degrades
+rather than the agent stalling.
+
+## 26. REPLAY CINEMA AND THE TIMELINE SCRUBBER
+
+```
+argus replay <session-id> --speed 4x --annotate --from-step 12
+```
+
+The event log is replayed as a **watchable film**: the constellation regrows, diffs re-apply,
+costs re-accumulate, failures re-shake, branches re-fork. Arrow keys scrub. Space pauses. Any
+frame can be exported.
+
+| Export | Use |
+|---|---|
+| asciinema cast | Bug reports, shareable terminal recording |
+| Animated SVG | Embeddable in a README or pull request |
+| GIF / MP4 | Teaching, demos, incident review |
+| Markdown transcript | Code review, compliance archive |
+| Static HTML report | Self-contained session audit |
+
+The **Timeline Scrubber** is the interactive twin: a horizontal step ribbon where each step is a
+cell coloured by outcome, with snapshot markers, clause proofs, and branch points. Selecting any
+cell shows the state at that moment; pressing `R` rewinds to it after a confirmation diff.
+
+This is only possible because of event sourcing (Part 0). It is a direct dividend of one
+architectural decision - not a feature anybody built on purpose.
+
+## 27. ACCESSIBILITY, THEMING, DEGRADATION
+
+| Concern | Handling |
+|---|---|
+| Themes | `nebula` (dark), `parchment` (light), `phosphor` (amber CRT), `mono` (no colour) |
+| Colour depth | Truecolour, graceful 256-colour and 16-colour degradation |
+| Motion sensitivity | `--reduced-motion` removes all non-essential animation |
+| Unicode support | `--no-unicode` falls back to the ASCII glyph set (Appendix C) |
+| Screen readers | Linear semantic text stream mode; no positional-only information |
+| Colour blindness | Status is never encoded by colour alone - glyph plus colour always |
+| Small terminals | Responsive down to 80x24; panels collapse in priority order |
+| Slow terminals | Frame governor detects render latency and reduces animation automatically |
+| Headless / CI | `--headless` emits JSON lines; identical information, zero rendering |
+
+---
+---
+
+# PART V - ENGINEERING
+
+## 28. PERFORMANCE IN PURE PYTHON
+
+The hard constraint is pure Python (axiom A8). Here is exactly how the targets are met without
+leaving the language.
+
+| Bottleneck | Naive cost | Strategy | Target |
+|---|---|---|---|
+| Repo indexing, 100k files | 90s full scan | Incremental watchdog reindex, content-hash disk cache, ProcessPoolExecutor for cold builds | under 50ms warm, under 25s cold |
+| Code search | Python regex over files | Subprocess to ripgrep, parse structured output | under 120ms on large repos |
+| Impact query | Recursive file reads | Precomputed graph, in-memory adjacency | under 15ms |
+| Model latency | Blocking sequential calls | asyncio throughout, streaming, speculative prefetch, prompt caching | p50 first token under 700ms |
+| Parallel scouts | Serial exploration | asyncio.TaskGroup with per-task budget slices | 8x fan-out, 4x wall-clock |
+| TUI rendering | Full-screen repaint | Textual damage regions, dirty-cell diffing, frame governor | steady 60fps |
+| Embeddings | Per-query recompute | sqlite-vec index plus content-hash memoisation | under 20ms retrieval |
+| Event persistence | fsync per event | Batched fsync in a 10ms window, WAL | 40k events/sec |
+| Projection rebuild | Full replay every time | Projection snapshots every 500 events | under 150ms cold |
+| Diff application | Whole-file rewrite | Byte-range atomic patch, temp plus rename | O(change), not O(file) |
+| GIL contention | CPU-bound parsing blocks the loop | ProcessPoolExecutor for AST and tree-sitter batches | loop never blocks over 16ms |
+| Snapshot storage | Copy every file every step | Content-addressed dedup plus zstd | single-digit MB per session |
+
+**The honest limit:** ARGUS will never beat a Rust agent at raw indexing throughput. It does not
+need to. The dominant latency in every agent is the model call, not local compute. Pure Python
+buys auditability, hackability, and a bus factor above one - all worth more than 200ms.
+
+## 29. FULL TECHNOLOGY STACK
+
+| Concern | Choice | Why |
+|---|---|---|
+| Runtime | Python 3.13+, free-threaded build supported | TaskGroup, ExceptionGroup, per-interpreter GIL path |
+| Async | asyncio, anyio | Structured concurrency, clean cancellation |
+| CLI | Typer | Type-hint driven, zero boilerplate |
+| TUI | Textual + Rich | Best async terminal UI in any language |
+| Validation | Pydantic v2 | Rust-backed speed, auto-generated tool schemas |
+| Hashing | blake3 | Fast content addressing |
+| Storage | SQLite WAL, sqlite-vec, JSONL | Zero-ops, inspectable, crash-safe, vector-capable |
+| Compression | zstandard | Snapshot store |
+| Shell parsing | bashlex | Structural command understanding and path-set extraction |
+| Code parsing | ast, tree-sitter bindings | 30+ languages, precise spans |
+| Semantics | LSP clients (pyright, tsserver, rust-analyzer, gopls) | Real type information |
+| Debugging | DAP clients (debugpy and friends) | Runtime inspection |
+| Refactoring | Rope | Genuine semantic refactors |
+| Search | ripgrep subprocess, rank_bm25 | Speed plus lexical relevance |
+| Embeddings | sentence-transformers, local by default | Privacy |
+| Local models | Ollama / llama.cpp bindings | Offline mode, zero-cost classification |
+| Process control | subprocess, psutil | Timeouts, resource caps, clean cancellation |
+| File watching | watchdog | Incremental index |
+| Testing | pytest, Hypothesis, pytest-asyncio, pytest-benchmark | Property tests for the kernel |
+| Diffing | difflib, unidiff | Structured patch application |
+| Observability | OpenTelemetry, structlog | Every step traceable |
+| Packaging | uv, hatchling, PyInstaller | `uv tool install argus`, plus standalone binaries |
+| Supply chain | Lockfiles, hash pinning, SBOM, sigstore signing | Dependency integrity |
+| Docs | MkDocs Material | Searchable, versioned |
+
+## 30. REPOSITORY LAYOUT
+
+```
+argus/
+|- argus/
+|   |- kernel/               <- THE MUL BINDU. Guard this with your life.
+|   |   |- events/           event types, schemas, versioning, migration
+|   |   |- log/              append, fsync batching, verification, iteration
+|   |   |- cas/              content-addressed store, dedup, GC
+|   |   |- fold/             projections and reducers
+|   |   |- branch/           multiverse, worktrees, merge
+|   |   `- time/             rewind, revert, replay, semantic addressing
+|   |- cortex/               FSM, plan DAG, search, budget, loop detection
+|   |- hippocampus/          tiers, compaction, dead-ends, retrieval, skills
+|   |- nexus/                symbols, LSP, DAP, graph, centrality, conventions
+|   |- swarm/                roles, scheduler, consensus, scout reports
+|   |- hands/                tools, registry, normaliser, MCP client
+|   |- forge/                environment digest, materialisation, drift
+|   |- goalkernel/           contract, clauses, distance, gravity, closure (Part VI)
+|   |- navigator/            drift detection, focus history, stall signals
+|   |- judge/                predicates, adapters, auditor, regression, flake
+|   |- preflight/            real precondition probes, why-engine, counterfactual runs
+|   |- router/               providers, matrix, caching, cassettes, failover
+|   |- oracle/               post-run analysis, calibration, distillation
+|   |- tui/
+|   |   |- widgets/          constellation, theatre, aurora, scrubber, graph
+|   |   |- motion/           easing, frame libraries, particles, governor
+|   |   |- themes/           nebula, parchment, phosphor, mono
+|   |   `- replay/           cinema player, asciinema/SVG/GIF export
+|   |- cli/                  Typer entrypoints, headless, daemon, attach
+|   `- telemetry/            otel spans, cost accounting
+|- prompts/                  versioned prompt artifacts with evals (36)
+|- policies/                 paranoid / balanced / permissive / ci
+|- skills/                   bundled L4 recipes
+|- benchmarks/
+|   |- swebench/ terminalbench/ internal/ goalmode/
+|- tests/
+|   |- unit/ property/ chaos/ golden/ snapshot/ escape/
+`- docs/
+```
+
+## 31. DATA MODEL AND SCHEMAS
+
+### 34.1 SQLite Tables (all derived - the log is truth)
+
+| Table | Key columns | Purpose |
+|---|---|---|
+| `sessions` | id, started_at, goal, cwd, git_head, env_digest, status, budget | One row per run |
+| `branches` | id, session_id, forked_from_seq, status, cost | Multiverse topology |
+| `events` | seq, session_id, branch, type, actor, causation_id, hash, offset | Log index |
+| `nodes` | id, branch, parent_id, kind, goal, predicate, status, risk, est/actual | Plan DAG |
+| `observations` | id, event_seq, digest, cas_ref, bytes, truncated | Output index |
+| `costs` | id, event_seq, provider, model, in_tok, out_tok, cached_tok, usd | Accounting |
+| `snapshots` | id, branch, step_seq, tree_hash, size | Rewind index |
+| `deadends` | id, scope, signature, reason, confidence, expires | The ledger |
+| `facts` | id, scope, key, value, confidence, source_event | L3 memory |
+| `skills` | id, name, triggers, path, success_count, last_used | L4 memory |
+| `nexus_nodes` | id, path, content_hash, symbol, kind, centrality, stale | Code graph |
+| `clauses` | id, contract_id, kind, weight, state, confidence, proven_at_seq, cost | Goal state |
+| `calibration` | node_kind, est, actual, error | Forecast accuracy |
+
+### 34.2 On-Disk Layout
+
+```
+.argus/                        (per project)
+  |- log/<session>.jsonl       append-only truth
+  |- index.db                  SQLite WAL, rebuildable
+  |- store/                    CAS objects, trees, refs
+  |- projections/              periodic projection snapshots
+  |- memory/facts.md           human-readable learned facts
+  |- nexus.db                  code graph cache
+  `- config.toml               project overrides
+
+~/.argus/                      (per user)
+  |- constitution.md           standing rules, always in L0
+  |- skills/                   distilled recipes
+|- goals/                    saved goal contracts
+  |- tools/                    drop-in plugins
+  `- config.toml               global config
+```
+
+## 32. PROTOCOL INTEROPERABILITY
+
+ARGUS speaks four open protocols rather than inventing private ones.
+
+| Protocol | Role | Benefit |
+|---|---|---|
+| **MCP** (Model Context Protocol) | Client | Any MCP server becomes a capability-negotiated tool |
+| **LSP** (Language Server Protocol) | Client | Real type information and semantic operations for 30+ languages, free |
+| **DAP** (Debug Adapter Protocol) | Client | Breakpoint debugging and runtime inspection (15.4) |
+| **OpenTelemetry** | Producer | Traces flow into any standard observability backend |
+
+**Why this matters strategically:** every language that ships a language server and a debug
+adapter gets first-class ARGUS support with **zero** language-specific code on our side. That is
+how a pure-Python agent achieves genuine polyglot competence.
+
+## 33. PROMPTS AS VERSIONED ARTIFACTS
+
+Prompts are code. They are treated as such - an unusual discipline that pays enormous dividends.
+
+| Practice | Detail |
+|---|---|
+| **Stored as files** | `prompts/<role>/<name>.v<N>.md`, never inline string literals |
+| **Versioned** | Each prompt has a semantic version; the version is recorded in `PromptAssembled` |
+| **Hashed** | `blake3` of the rendered prompt is the cache key and the reproducibility anchor |
+| **Tested** | Every prompt has an eval set with pass thresholds, run in CI against cassettes |
+| **Diffable** | A prompt change shows up in code review like any other change |
+| **A/B testable** | Two versions can run on alternate branches and be compared on real tasks |
+| **Per-model variants** | Different frontier models get tuned variants, selected by the router |
+| **Regression-gated** | A prompt change that drops any eval below threshold blocks the merge |
+
+Most agent projects lose weeks to "someone changed the prompt and quality dropped and nobody
+knows when." This is the fix, and it costs almost nothing to adopt on day one.
+
+## 34. OBSERVABILITY
+
+### 37.1 Span Taxonomy
+
+```
+argus.session
+  `- argus.node                 attrs: kind, risk, est_cost, autonomy
+       |- argus.state.PERCEIVE
+       |- argus.state.PLAN
+       |    `- argus.model.request   attrs: provider, model, tokens, cached, usd
+       |- argus.state.ACT
+|    |- argus.goal.bind      attrs: clause_id, gravity, distance_before
+       |    |- argus.snapshot.take   attrs: paths, bytes, dedup_ratio
+       |    `- argus.tool.invoke     attrs: tool, duration, exit_code, output_bytes
+       |- argus.state.VERIFY
+       |    `- argus.predicate.run   attrs: type, result
+       `- argus.state.CONSOLIDATE
+```
+
+### 37.2 What Is Always Measured
+
+Step latency distribution, model latency by provider, token throughput, cache hit rate, clause
+verdict distribution, predicate pass rate by type, snapshot dedup ratio, projection rebuild time,
+TUI frame times, scout parallelism achieved, budget utilisation, and calibration error.
+
+All of it is local by default. Telemetry export is strictly opt-in and its contents are
+enumerated in the documentation.
+
+## 35. TESTING STRATEGY
+
+| Layer | Technique | Gate |
+|---|---|---|
+| **Unit** | pytest, per-module | 90 percent coverage on the kernel |
+| **Property** | Hypothesis over the fold, scheduler, goal kernel, budget | All 12 invariants (6) |
+| **Golden sessions** | 50 recorded real sessions, replayed | Byte-identical projections (I10) |
+| **Cassette** | Recorded model responses | Full suite runs offline, zero API cost |
+| **Goal contract** | 200 malformed or ambiguous contracts | All rejected with actionable errors |
+| **Orphan action** | 150 attempted unattributed tool calls | Zero executed |
+| **Anti-clause** | 120 violation scenarios | 100 percent detected and rewound |
+| **Chaos** | SIGKILL at 100 random points per session | Zero unrecoverable states |
+| **Benchmark** | SWE-bench, Terminal-Bench, internal 500 | No regression versus previous release |
+| **Performance** | pytest-benchmark on hot paths | No regression over 10 percent |
+| **Snapshot** | TUI render output comparison | No unintended visual change |
+| **Prompt eval** | Per-prompt eval sets | No prompt below threshold |
+
+**Non-negotiable:** the goal-contract, orphan-action, anti-clause, and chaos suites run on **every commit**,
+not nightly. They are the reason the safety claims are credible.
+
+---
+---
+
+
+---
+---
+
+# PART VI - ✦ GOAL MODE ✦
+## THE CONVERGENCE - WHERE ALL NINE POWERS BECOME ONE
+
+> Part 0 gave the substrate one primitive: **the log**.
+> Part VI gives the agent one purpose: **the clause**.
+>
+> Every subsystem in Parts III-V exists to move a number. Goal Mode is the number.
+
+---
+
+## 36. WHAT GOAL MODE IS - AND WHAT EVERYONE ELSE CALLS A "GOAL"
+
+### 36.1 The Honest State Of The Art
+
+Every agent on the market has something called a goal. In every single case, it is **a string**.
+You type a sentence, the sentence is pasted into a system prompt, and from that moment the goal
+exists only as tokens the model may or may not still be attending to forty steps later.
+
+That is the whole mechanism. There is no goal object, no clause list, no proof, no distance, no
+drift detector, no closing condition. "Done" is whatever the model says at the moment it runs out
+of ideas.
+
+| What existing "goal / auto / agent modes" actually do | What is missing |
+|---|---|
+| Put the sentence in the prompt | The goal is not data, so nothing can query it |
+| Loop until the model says "done" | Completion is self-declared, not proven |
+| Show a checklist the model wrote itself | The checklist is prose, not evidence-bound |
+| Stop on step/token limit | Stopping is confused with finishing |
+| Ask you to re-explain when it drifts | Drift is never *detected*, only noticed by you |
+| Report success in a paragraph | No measurable remaining distance, ever |
+
+### 36.2 The Goal Mode Claim
+
+> **In Goal Mode the goal stops being text and becomes a first-class, machine-checkable object in
+> the event log - with clauses, evidence, weights, anti-goals, a computed distance, a velocity,
+> and a closing condition that no model may declare satisfied.**
+
+From that single change, four things become true that are not true of any other agent:
+
+| # | Consequence | Why nobody else can do it |
+|:--:|---|---|
+| 1 | **Every action is attributed.** No tool call exists that does not serve a named clause. | Requires the causal event graph (Part II) |
+| 2 | **Progress is a number, not an impression.** Distance, velocity, ETA, stall. | Requires clause-level proof evidence (§19 Judge) |
+| 3 | **All nine subsystems are re-aimed continuously** at the clause with the best expected distance reduction per dollar. | Requires deterministic scoring (§5 ladder) |
+| 4 | **Finishing is provable and drift is detectable.** `ACHIEVED` is a kernel verdict, not an opinion. | Requires invariants I5 / I11 / I12 (§6) |
+
+### 36.3 Goal Mode Is Not A Setting. It Is An Operating Regime.
+
+```
+Normal mode  :  human -> instruction -> agent acts -> human judges
+Goal Mode    :  human -> GOAL CONTRACT -> kernel binds every event to a clause
+                       -> distance falls monotonically or the run stops and says why
+                       -> kernel proves closure -> human reviews evidence, not prose
+```
+
+The autonomy ladder (§22) still applies unchanged. Goal Mode does not make the agent freer. It
+makes the agent **accountable** - which is the only thing that makes freedom survivable.
+
+---
+
+## 37. THE GOAL CONTRACT - A GOAL AS A MACHINE-CHECKABLE OBJECT
+
+### 37.1 Structure
+
+```
+GoalContract                      (an event: GoalDeclared)
+ |- id, created_at, author, version, parent_contract
+ |- statement        : the human sentence, kept verbatim, never used as logic
+ |- clauses          : [Clause]        <- the actual goal
+ |- anti_clauses     : [Clause]        <- what must NOT become true
+ |- invariant_clauses: [Clause]        <- what must stay true the whole time
+ |- budget           : steps / usd / wall / tokens / files
+ |- deadline         : optional wall-clock
+ |- autonomy_ceiling : L0-L5, cannot be raised by the agent
+ |- closing_rule     : ALL | WEIGHTED_THRESHOLD(x) | ORDERED
+ `- amendments       : [GoalAmended events]  <- history, never overwritten
+```
+
+### 37.2 The Clause - The Atom Of Goal Mode
+
+```
+Clause
+ |- id              : stable, referenced by every event that serves it
+ |- text            : human-readable intent
+ |- kind            : OUTCOME | ARTIFACT | BEHAVIOUR | CONSTRAINT | QUALITY | KNOWLEDGE
+ |- weight          : 0.0-1.0, normalised across the contract
+ |- proof           : PredicateSpec  <- §19 Judge. No predicate, no clause.
+ |- evidence        : [event ids that prove it]  <- filled only by the Judge
+ |- state           : OPEN | IN_PROGRESS | PROVEN | REGRESSED | BLOCKED | WAIVED
+ |- proven_at_seq   : log position of the proof
+ |- confidence      : how strong the proof type is (§39.3)
+ |- blocked_by      : [clause ids or human decisions]
+ `- attributed_cost : USD and steps spent on this clause alone
+```
+
+**The hard rule of Goal Mode:**
+
+> A clause without a machine-checkable predicate is **not accepted into the contract**. The kernel
+> rejects it and asks the human to make it checkable, or to mark it explicitly `advisory`.
+
+This single rule kills the most common failure in agent history: goals that cannot be failed.
+
+### 37.3 Clause Kinds, With Real Proof Types
+
+| Kind | Example clause | Real proof (rung) |
+|---|---|---|
+| `OUTCOME` | "the auth test suite passes" | `pytest tests/auth -q` exit 0 (3) |
+| `ARTIFACT` | "a migration file exists and applies cleanly" | file exists + `alembic upgrade head` exit 0 (1,3) |
+| `BEHAVIOUR` | "expired tokens are rejected with 401" | new test asserting it, run and green (3) |
+| `CONSTRAINT` | "no new mypy errors" | diff of type-check output (3) |
+| `QUALITY` | "no function above complexity 12" | ruff / radon threshold (3) |
+| `KNOWLEDGE` | "explain where sessions are invalidated" | answer with file:line evidence from the Nexus (4) |
+
+### 37.4 Anti-Clauses And Invariant Clauses
+
+The two clause families almost nobody models, and the reason agents "succeed" while wrecking
+something else.
+
+| Family | Meaning | Checked |
+|---|---|---|
+| **Anti-clause** | Must never become true. *"No test is deleted." "The public API signature does not change." "No dependency is added."* | After **every** write event, not at the end |
+| **Invariant clause** | Must remain true throughout. *"The full suite stays green." "Build time stays under 90s."* | On a cadence and before closure |
+
+An anti-clause violation immediately emits `ClauseRegressed`, halts the frontier, and rewinds
+(§9) to the last state where it held. This is the mechanism that makes long unattended runs
+actually safe to leave alone - not a promise, a rewind.
+
+### 37.5 How A Contract Is Built (Real Interaction, Not Magic)
+
+```
+$ argus goal "make JWT auth reject expired tokens properly"
+
+ARGUS drafts a contract by combining:
+  - your sentence                              (verbatim, kept)
+  - Nexus impact analysis of the named symbols (§15, rung 4)
+  - the repo's existing test conventions       (§15.1, statistical)
+  - project facts and constitution             (§14, §21.4)
+  - calibration data for similar past contracts(§21.2)
+
+DRAFT CONTRACT  (5 clauses, 2 anti-clauses, 1 invariant)
+  C1 [OUTCOME  w .35] tests/auth passes            proof: pytest exit 0
+  C2 [BEHAVIOUR w .30] expired token -> 401         proof: new test, green
+  C3 [ARTIFACT w .15] leeway configurable           proof: AST: param exists
+  C4 [CONSTRAINT w .10] no new mypy errors          proof: mypy delta = 0
+  C5 [KNOWLEDGE w .10] document the expiry policy   proof: file exists + section
+  A1 [ANTI] no existing test deleted or weakened
+  A2 [ANTI] no new runtime dependency
+  I1 [INVARIANT] full suite stays green
+
+  [a]ccept  [e]dit clause  [+]add  [-]remove  [w]eights  [s]trictness
+```
+
+You edit it like a document. It is then **frozen as an event**. From that moment the contract is
+history, not configuration - and every later amendment is a separate, attributable event.
+
+---
+
+## 38. THE GOAL KERNEL - TOTAL ATTRIBUTION
+
+### 38.1 The Attribution Rule
+
+> **Invariant I5, restated for Goal Mode:** every `ToolCallRequested` event carries a
+> `clause_id`. An event that serves no open clause is rejected before execution.
+
+This is enforced in Python at rung 1, not requested in a prompt. The kernel refuses the call and
+returns a structured `OrphanAction` error to the planner, which must either bind the action to a
+clause or propose a contract amendment (§41).
+
+### 38.2 What Total Attribution Buys
+
+| Question | Answer, mechanically |
+|---|---|
+| Why did the agent open `settings.py`? | Serves clause C3 |
+| What did clause C2 cost? | $0.14, 11 steps, 3 files - from `attributed_cost` |
+| Which clause is burning the budget? | Sort the goal projection by cost |
+| Was any work wasted? | Sum cost of clauses later regressed or waived |
+| Did the agent do anything I did not ask for? | Impossible by construction - there are no orphan events |
+| Which clause caused this line of code? | `argus why --line` walks causation to the clause |
+
+That last row is the one to sit with. In Goal Mode, **every line the agent writes has a named
+reason that traces back to a clause you approved.** No other tool - AI or otherwise - can do that.
+
+### 38.3 The Kernel Loop
+
+```
+after every appended event:
+  1. bind        attach event -> clause (reject if orphan)
+  2. re-check    all anti-clauses     (rung 1-3, cheap, always)
+  3. re-check    invariant clauses on cadence
+  4. re-prove    clauses whose evidence is now stale (§18.4 drift, §15.5 index)
+  5. measure     recompute goal distance and velocity (§39)
+  6. re-aim      recompute clause priority (§40)
+  7. emit        GoalDistanceMeasured
+```
+
+Steps 1-6 are pure Python over projections. Total cost per event: **under 3ms**. Zero tokens.
+Goal Mode adds no model spend at all - it *reduces* it, by ending runs that are no longer moving.
+
+---
+
+## 39. GOAL DISTANCE - A REAL, COMPUTED NUMBER
+
+### 39.1 Definition
+
+```
+distance(t) = 1 - sum over clauses [ weight_i * confidence_i * proven_i(t) ]
+
+where proven_i(t) in {0, 1}   - binary, set only by a Judge predicate result event
+      confidence_i            - proof strength (39.3)
+      weight_i                - normalised, human-editable
+```
+
+No model estimates this. No model can influence it. It is a fold over the log (§11), which means
+it is deterministic, replayable, and identical on every machine (invariant I11).
+
+**Distance is binary per clause on purpose.** "Clause 60% done" is exactly the self-reported
+fiction Goal Mode exists to eliminate. A clause is proven or it is not.
+
+### 39.2 Derived Signals
+
+| Signal | Formula | Used for |
+|---|---|---|
+| **Velocity** | distance reduction per 10 steps, rolling | ETA, stall detection |
+| **ETA** | remaining distance / velocity, calibrated (§21.2) | Human planning, shown live |
+| **Cost efficiency** | distance reduction per dollar | Router tier decisions (§20) |
+| **Stall** | velocity ≈ 0 across 15 steps | Escalate model tier, then branch, then ask |
+| **Thrash** | distance oscillating up and down | Rewind to best-known state, re-plan |
+| **Drift** | ≥ 30% of recent spend on the lowest-weight clause | Warn human, re-aim (§40) |
+| **Regression** | distance *increases* | Anti-clause or invariant broke - halt |
+
+### 39.3 Proof Confidence - Honest Grading
+
+Not all proofs are equally strong, and pretending otherwise would be exactly the kind of
+self-flattery this document refuses.
+
+| Proof type | Confidence | Reasoning |
+|---|:--:|---|
+| Test suite green, run in a snapshotted environment (§18) | **1.00** | Reproducible, environment-pinned |
+| Single new test green | 0.95 | Reproducible but narrow |
+| Type check / lint delta clean | 0.90 | Deterministic, partial coverage of intent |
+| AST assertion | 0.85 | Structure proven, behaviour not |
+| File / artifact existence | 0.70 | Existence is not correctness |
+| Nexus graph assertion | 0.85 | Complete, but static only |
+| Human approval of a diff | 1.00 | The human is the highest authority |
+| Rubric-scored model judgement | **0.50, capped** | Last resort; can never alone close a clause |
+
+**Hard rule:** a contract cannot reach `ACHIEVED` on a weighted sum where any clause's only
+evidence is model judgement. The kernel requires at least one ≥ 0.85 proof per clause, or an
+explicit human waiver recorded as an event.
+
+### 39.4 Why This Number Changes Everything
+
+| Without goal distance | With goal distance |
+|---|---|
+| "Is it still working or stuck?" you guess | Velocity says, in real time |
+| "How much longer?" nobody knows | Calibrated ETA, improving every run (§21.2) |
+| "Should I let it keep spending?" | Distance-per-dollar decides |
+| "Did it finish or give up?" | `ACHIEVED` vs `PARTIAL` vs `STALLED`, with proof |
+| Long unattended runs are a gamble | The run stops itself the moment it stops progressing |
+
+---
+
+## 40. GOAL GRAVITY - RE-AIMING ALL NINE SUBSYSTEMS AT ONE CLAUSE
+
+This is the section the user asked for: **all powers focused on one point.** Not metaphorically -
+mechanically. Every subsystem takes the current top clause as an input parameter.
+
+### 40.1 The Gravity Function
+
+After every event, each open clause is scored at rung 1 (pure arithmetic, free):
+
+```
+gravity(clause) =
+      weight
+    * feasibility        (real grounding checks: files exist, tools installed, deps met)
+    * (1 / est_cost)     (router forecast, calibrated)
+    * unblocked          (0 if blocked_by is non-empty)
+    * freshness_penalty  (down-weight clauses recently retried without progress)
+    * dependency_lift    (up-weight clauses that unblock other clauses)
+```
+
+The highest-gravity clause becomes **the focus**. Everything below re-aims at it, instantly.
+
+### 40.2 The Nine Re-Aimings
+
+| # | Subsystem | Normal behaviour | Under Goal Gravity |
+|:--:|---|---|---|
+| I | **CORTEX** §13 | Plans the task | Plans **only** the focus clause; the DAG is regenerated per focus shift, and every node inherits `clause_id` |
+| II | **HIPPOCAMPUS** §14 | Retrieves relevant context | Retrieval query is **built from the clause predicate**, not the chat history; the dead-end ledger is filtered to this clause |
+| III | **NEXUS** §15 | Indexes the repo | Computes the **clause's blast radius** and pins that subgraph in memory; LSP/DAP focus on the clause's symbols |
+| IV | **SWARM** §16 | Parallel sub-agents | Scouts are dispatched with **clause-scoped questions**; write-exclusivity is computed per clause path set |
+| V | **HANDS** §17 | Executes tools | Tool selection is filtered by `min_autonomy` **and** by whether the tool can plausibly produce this clause's evidence |
+| VI | **FORGE** §18 | Reproducible environment | Materialises the exact environment the clause's proof needs; stale-evidence detection is clause-scoped |
+| VII | **JUDGE** §19 | Verifies nodes | Runs **the clause's own predicate** - the clause and the test are the same object |
+| VIII | **ROUTER** §20 | Picks a model | Picks by **distance-gain per dollar** for this clause: cheap model for a 0.10-weight clause, frontier for a 0.35 blocker |
+| IX | **ORACLE** §21 | Learns after the run | Learns **per clause kind**: which proofs are cheap, which clauses always regress, which weights humans always edit |
+
+Plus the two cross-cutting layers:
+
+| Layer | Under Goal Gravity |
+|---|---|
+| **The Face** §23-27 | The Goal Compass (§43) becomes the primary panel; the plan constellation is coloured by clause |
+| **The Temporal Kernel** Part II | Branches (§10) are forked **per clause strategy**, and the winning branch is chosen by measured distance reduction, not by argument |
+
+### 40.3 Focus Shift Is An Event
+
+```
+FocusShifted { from: C2, to: C4, reason: "C2 blocked_by human decision",
+               gravity_before: 0.31, gravity_after: 0.44, seq: 1187 }
+```
+
+So the entire attention history of the run is replayable. `argus replay --track-focus` renders it
+as a single moving line across the timeline - you can literally watch where the agent's attention
+went, and what it cost.
+
+### 40.4 Convergent Branching
+
+When a clause resists two attempts, Goal Mode does not retry a third time. It **forks** (§10):
+
+```
+C2 stalled at attempt 2
+  |- branch goal/C2/a : patch verify_token directly
+  |- branch goal/C2/b : add a decorator at the route layer
+  `- branch goal/C2/c : fix at the token-factory level
+
+Each branch runs to the clause predicate, under 25% of the clause budget.
+Winner = first to prove the clause at the lowest cost, with no anti-clause violation.
+Losers are cancelled; their dead ends are harvested into the ledger (§14.3).
+```
+
+The winner is chosen by **a measured number**, not by a model arguing for its own plan. This is
+the deepest possible expression of the Mul Bindu: three futures, one past, one metric.
+
+---
+
+## 41. DRIFT, AMENDMENT & THE NEGOTIATION PROTOCOL
+
+### 41.1 Drift Is Detected, Not Noticed
+
+| Drift type | Detection (all rung 1-4) | Response |
+|---|---|---|
+| **Attention drift** | Spend concentrated on low-weight clauses | Re-aim, notify |
+| **Scope drift** | Files touched outside every clause's path set | Halt the write, demand attribution |
+| **Definition drift** | Agent's plan implies a clause the contract lacks | Force an amendment proposal |
+| **Evidence drift** | Proof predates an environment change (§18.4) | Re-prove before closure |
+| **Silent success drift** | Distance stops falling but steps continue | Stall → escalate → branch → ask |
+
+### 41.2 Amendment Protocol
+
+The agent may **never** edit the contract. It may only propose:
+
+```
+AmendmentProposed
+ |- kind      : ADD_CLAUSE | SPLIT | REWEIGHT | WAIVE | RELAX_PROOF | EXTEND_BUDGET
+ |- rationale : structured, with evidence event ids
+ |- evidence  : what it learned that the contract did not anticipate
+ |- impact    : new distance, new ETA, new cost forecast
+ `- verdict   : awaiting human
+```
+
+The TUI shows it as a diff of the contract. Accept, reject, or edit. The decision is an event.
+**Rejected amendments are kept** - they are some of the most valuable data in the log, because
+they record exactly where the agent's understanding diverged from yours.
+
+### 41.3 Why Amendment-By-Proposal Matters
+
+An agent that can silently redefine success will always succeed. An agent that must ask you to
+change the definition can never quietly move the goalposts. This is a two-line rule that removes
+an entire class of dishonest completion.
+
+---
+
+## 42. CONVERGENCE & CLOSURE
+
+### 42.1 The Five Terminal States
+
+| State | Condition | Report |
+|---|---|---|
+| `ACHIEVED` | Every clause `PROVEN` at required confidence, zero anti-clause violations, invariants hold, evidence fresh | Full evidence bundle |
+| `PARTIAL` | Closing rule is `WEIGHTED_THRESHOLD` and the threshold is met, but open clauses remain | Exact list of what is not done |
+| `STALLED` | Velocity ≈ 0 and every escalation exhausted | Precisely where and why it stopped |
+| `BLOCKED` | An open clause needs a human decision or a missing credential | The single question that unblocks it |
+| `ABANDONED` | Budget exhausted or human stop | Rewind offer to the best-known state |
+
+**There is no `DONE` state that a model may write.** `ACHIEVED` is computed by the kernel from
+proof events. This is the closing sentence of the entire architecture.
+
+### 42.2 The Closure Ritual
+
+```
+1. Re-prove   every clause from scratch, in a Forge-materialised environment
+2. Re-check   every anti-clause across the full diff of the run
+3. Re-run     the regression shield (§19.5): everything green at start is green now
+4. Freshness  reject any proof whose environment digest no longer matches
+5. Bundle     evidence: predicate results, diffs, snapshots, event ids per clause
+6. Emit       GoalAchieved | GoalPartial | GoalStalled ...
+7. Distil     Oracle writes clause-kind calibration + skills (§21)
+```
+
+Step 1 is deliberately expensive. A proof from step 40 is not trusted at step 200. Everything is
+re-proven at the end, once, in a clean environment.
+
+### 42.3 The Evidence Bundle
+
+```
+GOAL ACHIEVED  -  contract 7f3a2c  -  4 clauses, 2 anti, 1 invariant
+
+ C1 tests/auth passes         PROVEN  conf 1.00  ev #1841  pytest exit 0, 34 passed
+ C2 expired token -> 401      PROVEN  conf 0.95  ev #1802  tests/auth/test_exp.py::test_401
+ C3 leeway configurable       PROVEN  conf 0.85  ev #1774  AST: verify_token(leeway=)
+ C4 no new mypy errors        PROVEN  conf 0.90  ev #1849  delta 0
+ A1 no test deleted           HELD    checked at 23 write events
+ A2 no new dependency         HELD    lockfile hash unchanged
+ I1 suite green throughout    HELD    7 checkpoints
+
+ distance 1.00 -> 0.00   |  47 steps  |  $0.31  |  9m 12s
+ files 6 (+184 -37)      |  branches 2 (1 discarded)
+ rewind available to any of 47 steps      argus rewind --to-step N
+ replay the whole run                     argus replay 7f3a2c --track-focus
+ why any line exists                      argus why --file X --line N --show-clause
+```
+
+That is the deliverable of Goal Mode: not a paragraph claiming success, but **a proof, per clause,
+with event ids you can independently verify against a tamper-evident log.**
+
+### 42.4 Regression Re-Opens Clauses
+
+A proven clause is not permanently proven. If a later event breaks it, the Judge emits
+`ClauseRegressed`, the clause returns to `OPEN`, distance **increases**, and the run cannot close.
+Monotonic progress is not assumed - it is measured.
+
+---
+
+## 43. THE GOAL COMPASS - CLI & TUI SURFACE
+
+### 43.1 The Compass Panel
+
+```
++--------------------------------- GOAL COMPASS -------------------------------+
+|  "make JWT auth reject expired tokens properly"      contract 7f3a2c  v2      |
+|                                                                               |
+|  DISTANCE  0.30  [##############################..............]  70% proven   |
+|  VELOCITY  0.041 / 10 steps        ETA ~ 14 steps  (calib +/- 4)              |
+|  SPEND     $0.19 / $3.00           EFFICIENCY  3.7 distance-pts per $         |
+|                                                                               |
+|  C1 .35 tests/auth passes        [####------] IN_PROGRESS  <-- FOCUS  $0.11   |
+|  C2 .30 expired token -> 401     [##########] PROVEN 0.95         $0.05       |
+|  C3 .15 leeway configurable      [##########] PROVEN 0.85         $0.02       |
+|  C4 .10 no new mypy errors       [..........] OPEN                $0.00       |
+|  C5 .10 document expiry policy   [..........] BLOCKED  needs your decision    |
+|                                                                               |
+|  A1 no test deleted        HELD  |  A2 no new dependency   HELD               |
+|  I1 suite green            HELD  (last checked step 41)                       |
+|                                                                               |
+|  focus history  C2 -> C3 -> C2 -> C1          drift  none                     |
++-------------------------------------------------------------------------------+
+```
+
+### 43.2 Goal Mode Animations (all information-bearing, §25 rules apply)
+
+| Event | Motion | Meaning |
+|---|---|---|
+| Clause proven | Bar fills left to right, then a single gold pulse | Evidence accepted |
+| Distance falls | The distance bar contracts with an ease-out sweep | Real progress |
+| Distance rises | Bar expands, red flash, focus ring shakes once | Regression - look now |
+| Focus shift | A comet travels from the old clause row to the new | Attention moved, and why |
+| Convergent branch | The focus row splits into 2-3 racing sub-bars | Strategies competing |
+| Branch wins | Losing bars dissolve into the winner | Measured, not argued |
+| Anti-clause held | A thin steady underline beneath the A-rows | Quiet reassurance |
+| Anti-clause broken | Full-panel red border, run halts, rewind offered | Immediate stop |
+| Stall | Velocity needle drops and idles, amber breathing | It is not moving |
+| Achieved | Distance bar collapses to zero, evidence bundle unfurls | Provably finished |
+
+### 43.3 CLI Surface
+
+```
+argus goal "<statement>"                 draft a contract interactively
+argus goal --from goal.yaml              load a written contract (Appendix B)
+argus goal --contract 7f3a2c resume      resume against an existing contract
+
+argus goal status                        distance, velocity, ETA, per-clause spend
+argus goal clauses                       full clause table with evidence ids
+argus goal evidence C2                   show exactly what proved C2
+argus goal focus C4                      manually re-aim (overrides gravity)
+argus goal weight C1=0.45                reweight, recomputes distance instantly
+argus goal waive C5 --reason "..."        human waiver, recorded as an event
+argus goal amend                          review pending amendment proposals
+argus goal drift                          drift report across the run
+argus goal replay --track-focus           watch attention move over time
+argus goal prove --all --fresh            re-run every proof in a clean Forge env
+argus goal bundle --format md|html|json   export the evidence bundle
+```
+
+### 43.4 What Goal Mode Costs
+
+| Component | Cost |
+|---|---|
+| Contract drafting | one frontier call, ~$0.01 |
+| Kernel loop (bind, check, measure, re-aim) | **0 tokens**, under 3ms per event |
+| Anti-clause checks | rung 1-3, deterministic, free |
+| Closure ritual | one full proof pass, seconds of CPU |
+| **Net effect on total run cost** | **negative** - Goal Mode ends stalled runs early and routes cheap models to low-weight clauses. Expected saving: **20-35%** versus the same task run without it. |
+
+Goal Mode is not an expensive luxury layer. It is the cheapest part of the system, because it is
+almost entirely arithmetic over a log that already exists.
+
+### 43.5 The One-Paragraph Summary
+
+> Goal Mode turns an instruction into a contract, a contract into clauses, a clause into a
+> predicate, a predicate into evidence, and evidence into a single number that only the kernel may
+> change. Every one of the nine subsystems is then continuously re-aimed at whichever clause moves
+> that number the most per dollar. The agent cannot declare victory, cannot silently redefine the
+> goal, cannot act without attribution, and cannot stop without telling you exactly how far it
+> got. That is not a prompt technique. It is a different kind of machine.
+# PART VII - THE PROGRAM
+
+## 44. ROADMAP - 52 WEEKS, 11 PHASES
+
+Sequenced so that the riskiest architectural bet is validated first and every phase ends with
+something genuinely usable.
+
+### Phase 0 - The Kernel (Weeks 1-6)
+
+**Build:** event types and schemas, append-only log with batched fsync, blake3 Merkle spine,
+content-addressed store, fold engine with 12 projections, `argus verify-log`, crash recovery.
+
+**Exit criteria:** 40k events/sec sustained. Cold projection rebuild under 150ms on a 10k-event
+log. Hypothesis property tests pass for all fold reducers. 100 random SIGKILLs produce zero
+unrecoverable states. **Nothing else starts until this is true.**
+
+### Phase 1 - Minimum Viable Agent (Weeks 7-12)
+
+**Build:** Cortex FSM, plan DAG, single-agent loop, 12 core tools, structural command parsing,
+snapshots, basic Rich output, exit-code and file predicates.
+
+**Exit:** completes real single-file tasks end to end. Every action snapshotted and attributed.
+Zero orphan actions across a 150-case corpus.
+
+### Phase 2 - Time Travel (Weeks 13-17)
+
+**Build:** `rewind`, `revert`, `replay`, timeline scrubber, semantic time addressing, snapshot GC.
+
+**Exit:** rewind to any step restores files and agent state exactly. Replay of a golden session is
+byte-identical. **This is the phase that proves the thesis.**
+
+### Phase 3 - Nexus (Weeks 18-24)
+
+**Build:** AST and tree-sitter indexing, LSP client, call graph, impact analysis, coverage map,
+incremental reindex, `code.*` tool family.
+
+**Exit:** impact query under 15ms. Warm reindex under 50ms. Measurable reduction in wrong-symbol
+edits against the internal benchmark.
+
+### Phase 4 - The Judge (Weeks 25-29)
+
+**Build:** all 12 predicate types, structured Failure, flake detection, Auditor pass, regression
+shield.
+
+**Exit:** false-"done" rate below 3 percent on the internal 500-task benchmark.
+
+### Phase 5 - Memory (Weeks 30-34)
+
+**Build:** five tiers, structured compaction, Dead-End Ledger with deterministic enforcement,
+hybrid retrieval, skill distillation, the constitution.
+
+**Exit:** long sessions no longer degrade. Zero repeated dead ends across a 100-session corpus.
+
+### Phase 6 - Swarm and Forge (Weeks 35-39)
+
+**Build:** seven roles, scheduler with write-exclusivity, scout reports, consensus, hierarchical
+budget slices; environment digest, materialisation modes, drift detection.
+
+**Exit:** 4x wall-clock speedup on multi-file tasks with zero write conflicts. Environment digest
+diff correctly explains a reproduced-versus-not-reproduced bug.
+
+### Phase 7 - The Multiverse and Preflight (Weeks 40-43)
+
+**Build:** branching execution, worktree materialisation, merge transplant, real preflight probes
+on every tool, `what-if`, `why`, `blame-decision`.
+
+**Exit:** branching improves success rate on ambiguous tasks. Real preflight probes catch at least
+30 percent of would-be failures before any spend.
+
+### Phase 8 - The Face (Weeks 44-47)
+
+**Build:** full Textual TUI, all nine panels, the complete motion library, Replay Cinema, themes,
+accessibility, headless parity.
+
+**Exit:** steady 60fps on a 5-year-old laptop. Full screen-reader mode. Headless emits identical
+information as JSON.
+
+### Phase 9 - GOAL MODE (Weeks 48-50)
+
+**Build:** the Goal Contract object, the Goal Kernel attribution loop, goal distance and velocity,
+Goal Gravity re-aiming of all nine subsystems, drift detection, the amendment protocol, the
+closure ritual, the evidence bundle, and the Goal Compass panel (Part VI).
+**Exit:** zero orphan actions. Distance is byte-identical on replay. Goal Mode reduces median run
+cost by at least 20 percent versus the same tasks run without it.
+
+### Phase 10 - Oracle and Release (Weeks 51-52)
+
+**Build:** post-run analysis, calibration, corpus mining, `argus stats`, packaging, signed
+binaries, SBOM, documentation.
+
+**Exit:** all metrics in 40 met. Public 1.0.
+
+---
+
+## 45. BENCHMARKS AND HARD METRICS
+
+Numbers, not adjectives. Every one of these is measurable and will be published, including the
+failures.
+
+### 40.1 Capability
+
+| Metric | Target | How measured |
+|---|---|---|
+| SWE-bench Verified | at least 55 percent resolved | Public harness, unmodified |
+| Terminal-Bench | top decile | Public harness |
+| Internal 500-task suite | at least 85 percent | Real repos, real bugs, human-graded |
+| Multi-file refactor success | at least 75 percent | Internal, at least 5 files touched |
+| Cross-language tasks | at least 65 percent | Python, TS, Go, Rust via LSP |
+
+### 40.2 Trust
+
+| Metric | Target |
+|---|---|
+| False-"done" rate (claimed pass, actually failed) | under 3 percent |
+| Orphan actions executed (150-case corpus) | **0** |
+| Malformed goal contracts silently accepted | **0** |
+| Anti-clause violations undetected (120 scenarios) | **0** |
+| Unrecoverable states after 100 random SIGKILLs | under 0.5 percent |
+| Unintended files modified per run | under 0.1 |
+| Runs closing as ACHIEVED with an unproven clause | **0** |
+| Log verification failures on untampered logs | **0** |
+
+### 40.3 Efficiency
+
+| Metric | Target |
+|---|---|
+| p50 time to first token | under 700ms |
+| p50 time to first useful action | under 3s |
+| Median cost per completed task | under $0.08 |
+| Prompt cache hit rate, long sessions | at least 60 percent |
+| Parallel speedup, multi-file tasks | at least 4x |
+| Wasted-step ratio | under 15 percent |
+| Cost forecast error after calibration | under 25 percent |
+
+### 40.4 Experience
+
+| Metric | Target |
+|---|---|
+| TUI frame rate, 5-year-old laptop | steady 60fps |
+| Cold start to interactive | under 400ms |
+| Warm repo index availability | under 200ms |
+| Rewind to any step | under 2s |
+| Session replay accuracy | 100 percent byte-identical |
+
+
+---
+
+## 46. ENGINEERING RISK REGISTER
+
+| Risk | Severity | Mitigation |
+|---|:--:|---|
+| Kernel design flaw discovered late | **Critical** | Phase 0 is six weeks and blocks everything; property-tested invariants |
+| Event log grows unmanageably | Medium | Compaction, retention policy, CAS dedup, GC with a reachability proof |
+| Projection and disk state diverge | High | The filesystem projection hash-verifies against disk each step (I8) |
+| Goal distance becomes gameable | **High** | Distance is binary per clause, set only by Judge predicate events; no model may write it (I11) |
+| Clauses too vague to prove | High | The kernel rejects any clause without a predicate; humans must make it checkable or mark it advisory |
+| Over-decomposition into trivial clauses | Medium | Weight normalisation plus a minimum-weight floor; Oracle flags contracts with clause inflation |
+| Python too slow for a large monorepo | Medium | Incremental indexing, subprocess offload, measured targets in §28 |
+| Textual cannot sustain 60fps | Medium | Frame governor, damage regions, automatic degradation |
+| LSP servers flaky or absent | Medium | Graceful degradation to AST-only; never a hard dependency |
+| Branching cost explosion | Medium | Convergent branching capped at 25% of the clause budget; aggressive cancellation |
+| Provider API churn | Medium | Thin adapter layer, cassettes, multi-provider failover |
+| Scope creep across nine subsystems | High | Strict phase gates; no phase starts before the previous exits |
+
+**The honest one:** the largest risk in this project is not technical. It is the temptation to
+build features that do not fold into the log or serve a clause. Both rules exist to make that
+temptation mechanically detectable in code review.
+## 47. COST MODEL, NON-GOALS, NEXT ACTIONS
+
+### 42.1 Economics
+
+| Task class | Steps | Model mix | Expected cost |
+|---|:--:|---|---|
+| Question about the codebase | 3-6 | Local plus mid | under $0.01 |
+| Single-file bug fix | 8-15 | Mid plus frontier planning | $0.03-0.08 |
+| Multi-file feature | 25-60 | Frontier plus 6 scouts | $0.20-0.60 |
+| Large refactor with branching | 60-150 | Frontier plus consensus plus 3 branches | $0.80-2.50 |
+| Fully offline local mode | any | Local only | **$0.00** |
+
+Prompt caching, local-model routing, and structured compaction are collectively expected to cut
+naive cost by 60-80 percent on long sessions.
+
+### 42.2 Explicit Non-Goals
+
+Stated plainly, because a project defined only by ambitions is not a real project.
+
+| Not building | Why |
+|---|---|
+| A GUI or IDE | The terminal is the thesis |
+| A hosted cloud service | Local-first is a privacy guarantee, not a preference |
+| Our own foundation model | Orders of magnitude out of scope |
+| Autonomous production deployment | `IRREVERSIBLE` always requires a human. Permanently. |
+| A Rust or Go rewrite | Pure Python is a hard constraint (A8) |
+| Beating Rust agents on raw indexing speed | Not the bottleneck; not worth the trade |
+| Agents that talk to each other freely | Structured typed reports only; free-form chatter burns money |
+| Fine-tuning on user code | Privacy violation; improvement comes from the log corpus instead |
+
+### 42.3 Known Unsolved Problems
+
+Honesty about the frontier:
+
+1. **Semantic equivalence checking** at scale is undecidable in general; the semantic-diff
+   predicate is heuristic and labelled as such.
+2. **Cross-repo reasoning** for monorepos above 1M files will need work not yet designed.
+3. **True concurrency in Python** is improving with the free-threaded build but is not solved.
+4. **Judging subjective quality** ultimately still needs a human. The Auditor reduces the load;
+   it does not remove it.
+5. **Model non-determinism** means replay is exact only against cassettes, not against live APIs.
+   This is stated, not hidden.
+
+### 42.4 First Three Actions
+
+1. **Freeze the event schema.** Write all 61 event types with Pydantic models and version numbers.
+   Everything else depends on this, and changing it later is expensive.
+2. **Build the log and the fold.** Append, hash-chain, verify, project, snapshot, recover. Hit
+   40k events/sec and a sub-150ms rebuild before writing a single agent feature.
+3. **Prove time travel on a toy agent.** Three tools, ten steps, then `rewind --to-step 4` and
+   watch the filesystem and the agent's mind return together. When that works, the hard part of
+   this project is over.
+
+---
+---
+
+# APPENDICES
+
+## Appendix A - CLI Command Surface
+
+```
+argus                                   launch interactive TUI
+argus "fix the failing auth test"       one-shot task
+argus --autonomy L4 --forge container   launch with explicit posture
+argus resume <session-id>               resume a paused or crashed session
+argus attach                            reattach to a background daemon session
+
+argus rewind --to-step 17               time travel: files + agent state
+argus rewind --to "before the refactor" semantic time addressing
+argus rewind --to-last-passing          jump to the last green state
+argus revert --files --to-step 17       files only; agent keeps the memory
+argus replay <id> --speed 4x            watch the session as a film
+argus timeline <id>                     interactive step scrubber
+
+argus explore "two ways to do this"     open parallel branches
+argus branches                          list branches with cost and status
+argus what-if --from-step 22 --instead "..."   counterfactual run
+argus why --file src/x.py --line 47     causal chain back to the human instruction
+argus blame-decision --node "..."       prompt, context, model, alternatives
+
+argus verify-log <id>                   Merkle integrity check
+argus goal status                       distance, velocity, ETA, per-clause spend
+argus cost --session <id> --by node     spend breakdown
+argus stats                             calibration curves and corpus insights
+argus forge diff <a> <b>                environment digest comparison
+argus index --rebuild                   force a full Nexus rebuild
+
+argus goal prove --all --fresh           re-prove every clause in a clean environment
+argus skills list | add | remove        manage L4 recipes
+argus constitution edit                 open the standing-rules file
+argus export <id> --format svg|gif|md|html
+argus --headless --json                 CI mode
+```
+
+
+## Appendix B - Goal Contract Grammar
+
+A contract may be drafted interactively (§37.5) or written by hand and loaded with
+`argus goal --from goal.yaml`. It is validated against a schema before it becomes an event.
+
+```yaml
+version: 1
+statement: "make JWT auth reject expired tokens properly"
+
+closing_rule: ALL          # ALL | WEIGHTED_THRESHOLD | ORDERED
+autonomy_ceiling: L4
+
+budget:
+  max_steps: 200
+  max_usd: 3.00
+  max_wall_minutes: 45
+
+clauses:
+  - id: C1
+    text: "the auth test suite passes"
+    kind: OUTCOME
+    weight: 0.35
+    proof:
+      type: exit_code
+      command: "pytest tests/auth -q"
+      expect: 0
+
+  - id: C2
+    text: "an expired token is rejected with 401"
+    kind: BEHAVIOUR
+    weight: 0.30
+    proof:
+      type: new_test_green
+      must_assert: "401"
+      path_hint: "tests/auth/"
+
+  - id: C3
+    text: "clock leeway is configurable"
+    kind: ARTIFACT
+    weight: 0.15
+    proof:
+      type: ast_assert
+      symbol: "verify_token"
+      has_parameter: "leeway"
+
+  - id: C4
+    text: "no new type errors"
+    kind: CONSTRAINT
+    weight: 0.10
+    proof:
+      type: tool_delta
+      command: "mypy src"
+      delta: 0
+
+  - id: C5
+    text: "the expiry policy is documented"
+    kind: KNOWLEDGE
+    weight: 0.10
+    proof:
+      type: file_section
+      path: "docs/auth.md"
+      heading: "Token expiry"
+
+anti_clauses:
+  - id: A1
+    text: "no existing test is deleted or weakened"
+    check: { type: diff_assert, forbid: [test_removed, assert_removed] }
+  - id: A2
+    text: "no new runtime dependency"
+    check: { type: file_unchanged, path: "uv.lock" }
+
+invariant_clauses:
+  - id: I1
+    text: "the full suite stays green"
+    check: { type: exit_code, command: "pytest -q", expect: 0 }
+    cadence: every_5_write_events
+```
+
+**Validation rules enforced at load time**
+
+| Rule | Behaviour on violation |
+|---|---|
+| Every clause has a `proof` block | Rejected; the kernel names the clause |
+| Weights sum to 1.0 after normalisation | Auto-normalised, and the change is shown |
+| Proof types resolve to a real predicate adapter (§19.1) | Rejected with the list of valid types |
+| Referenced commands exist in the environment | Warning at load, hard failure at first use |
+| No clause depends on itself | Rejected (cycle check) |
+| `model_judgement` proofs cannot be the only evidence | Rejected unless paired or explicitly `advisory` |
+## Appendix C - Animation Frame Library (excerpt)
+
+```
+spinner.orbit      . o O @ O o .                    (idle thinking)
+spinner.pulse      = ==== ======== ==== =           (streaming tokens)
+node.ignite        . : + * # @                      (240ms ease-out)
+node.pass          [ ] [.] [:] [+] [#] [v]          (sweep + check)
+node.fail          [!] shake x3, amber -> red
+node.blocked       [/] barred glyph, dead-end hit
+scout.emit         o  .o  ..o  ...o  ....o          (particles outward)
+scout.return       o....  o...  o..  o.  o          (converge)
+verify.ring        ( ) (( )) ((( ))) (( )) ( )      (concentric sweep)
+rewind.scan        horizontal scanline sweeping upward, content reverting
+branch.fork        --.  --<  --<<  one path dims
+goal.proven       bar fills left to right, single gold pulse
+goal.regress      bar expands, red flash, focus ring shakes once
+cost.aurora        gradient cyan -> teal -> amber -> red across the bottom bar
+
+ASCII fallback set for --no-unicode: . : + * # @ [ ] ( ) < > / \ | - =
+```
+
+## Appendix D - Error Taxonomy
+
+| Class | Recovery |
+|---|---|
+| `ToolError` | Structured Failure, retry with a corrected approach |
+| `ClauseRegressed` | Clause reopens, distance rises, run cannot close |
+| `BudgetExceeded` | Pause, ask the human to extend or re-scope |
+| `PredicateFailed` | Diagnose, amend the plan, or branch |
+| `ModelError` | Provider failover with backoff |
+| `OrphanAction` | Rejected before execution; planner must attribute or amend |
+| `GoalStalled` | Escalate tier, then branch, then ask the human |
+| `EnvironmentDrift` | Invalidate stale observations, re-verify |
+| `KernelError` | Halt immediately, fsync, preserve the log. Never continue on a kernel fault. |
+
+## Appendix E - Keybinding Map
+
+```
+1-9    switch panel                  a      accept hunk        r   reject hunk
+e      edit hunk                     A      accept all         R   rewind to selection
+space  pause / resume                /      filter thought stream
+tab    cycle focus                   ?      help overlay       q   quit (graceful)
+ctrl-c cancel current tool           ctrl-c x2 pause + exit    ctrl-z background
+L      cycle autonomy level          S      cycle forge mode
+t      toggle timeline scrubber      m      toggle multiverse view
+g      toggle nexus graph            x      toggle goal compass
+[ ]    previous / next step          <  >   previous / next branch
+```
+
+## Appendix F - Configuration Reference (excerpt)
+
+```toml
+[agent]
+autonomy = "L3"
+forge    = "balanced"
+branching = false
+
+[budget]
+max_steps = 200
+max_usd = 3.00
+max_wall_minutes = 45
+max_tokens = 4_000_000
+max_files = 80
+max_parallel = 8
+
+[models]
+planner = "frontier-reasoning"
+surgeon = "frontier"
+scout = "fast-mid"
+local = "llama-local"
+offline_mode = false
+
+[memory]
+compact_at_utilisation = 0.55
+embed_locally = true
+keep_last_n_sessions = 50
+
+[nexus]
+lsp_enabled = true
+dap_enabled = true
+max_index_files = 200_000
+
+[ui]
+theme = "nebula"
+reduced_motion = false
+unicode = true
+frame_budget_ms = 16
+
+[privacy]
+send_code_to_embedding_api = false
+telemetry = false
+```
+
+## Appendix G - Failure Runbooks (excerpt)
+
+| Symptom | First action | Root-cause tool |
+|---|---|---|
+| Agent loops on the same fix | `argus stats --loops` | Dead-End Ledger inspection |
+| Cost spiked unexpectedly | `argus cost --by node` | Router matrix audit |
+| Edit landed in the wrong function | `argus why --file --line` | Nexus staleness check |
+| Tests pass locally, fail in CI | `argus forge diff` | Environment digest comparison |
+| Session will not resume | `argus verify-log` | Fold from the last valid seq |
+| TUI is stuttering | `--reduced-motion` | Frame governor telemetry |
+| Distance stopped falling | `argus goal status` | Stall report: focus history and blockers |
+
+## Appendix H - Architecture Decision Records
+
+| # | Decision | Rejected alternative | Rationale |
+|:--:|---|---|---|
+| 1 | Event sourcing as the single primitive | Mutable state objects | Time travel, replay, audit, resume all fall out for free |
+| 2 | JSONL as truth, SQLite as index | SQLite as truth | Human-inspectable, append-only, trivially recoverable |
+| 3 | blake3 content addressing | Sequential integer ids | Dedup, integrity, cache keys, tamper evidence |
+| 4 | Pure Python, no native extensions we own | Rust core | Auditability and hackability beat 200ms |
+| 5 | Goals as machine-checkable contracts | Goals as prompt text | A goal that cannot be failed is not a goal |
+| 6 | Predicates over LLM judgement | LLM-as-judge default | Determinism ladder; models cannot grade themselves |
+| 7 | Structured records over prose summaries | Text compaction | Prose loses negative information |
+| 8 | Deterministic dead-end blocking | Prompt-level discouragement | A guarantee, not a suggestion |
+| 9 | Reads parallel, writes serialised | Full parallelism | Write conflicts are catastrophic and silent |
+| 10 | Blind auditor | Auditor sees the reasoning | An auditor with the defence is not an auditor |
+| 11 | LSP and DAP clients | Custom language analysis | 30+ languages for free, real type information |
+| 12 | MCP client, not a custom plugin API | Bespoke plugin protocol | Ecosystem leverage |
+| 13 | Prompts as versioned files with evals | Inline string literals | Prompt regressions become visible in review |
+| 14 | Six-level autonomy ladder | Binary auto-approve flag | Trust is earned incrementally |
+| 15 | Local-first by default | Cloud-first | Privacy as an architectural property |
+| 16 | Branch by git worktree | In-place stash juggling | True isolation, no conflicts by construction |
+| 17 | Real preflight probes before acting | Act and roll back | Milliseconds beat dollars, and probes never guess |
+| 18 | Total attribution: every action serves a clause | Free-running agents | Orphan work is the root of drift |
+
+## Appendix I - Glossary
+
+| Term | Meaning |
+|---|---|
+| **Mul Bindu** | The single root idea: reality is an append-only causal event log |
+| **Fold** | The pure function from a log prefix to state |
+| **Projection** | A specific derived view produced by folding |
+| **Merkle spine** | The parent-hash chain making the log tamper-evident |
+| **Determinism ladder** | Rungs 0-9 from pure Python to frontier model |
+| **Dead-End Ledger** | Deterministically enforced store of approaches known not to work |
+| **Predicate** | A machine-checkable success condition attached to a plan node |
+| **Path set** | The set of paths a node may write; the write-exclusivity key |
+| **Shadow branch** | `argus/session-<id>/step-<n>`, where snapshots live |
+| **Cassette** | A recorded model request/response pair used for offline replay |
+| **Environment digest** | A hash of everything that can change execution behaviour |
+| **Autonomy level** | L0-L5; how much freedom the agent currently has |
+| **Branch / Multiverse** | A forked timeline exploring an alternative approach |
+
+---
+
+> **Closing statement.**
+>
+> Every capability in this document - time travel, branching, replay, causal explanation,
+> perfect resume, tamper-evident audit, cost attribution, self-calibration - descends from **one**
+> decision made in Part 0: *record reality as an immutable causal event log, and derive everything
+> else from it.*
+>
+> That is the Mul Bindu. Everything else is a consequence.
+>
+> The plan is real. The numbers are measurable. The constraints are honest. The non-goals are
+> stated. Nothing here requires a research breakthrough - only six weeks of disciplined kernel
+> work, and then the courage to refuse to build anything that does not fold.
+>
+> **ARGUS-Omega. Pure Python. Local first. Nothing forgotten. Nothing irreversible without you.**

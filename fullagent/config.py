@@ -12,6 +12,7 @@ APP_DIR = Path(os.environ.get("FULLAGENT_HOME", Path.home() / ".fullagent"))
 CONFIG_FILE = APP_DIR / "config.json"
 HISTORY_FILE = APP_DIR / "history"
 SESSIONS_DIR = APP_DIR / "sessions"
+EVENT_LOG_FILE = APP_DIR / "eventlog.jsonl"
 
 DEFAULT_TIMEOUT = 300.0
 MAX_TOOL_ITERATIONS = 40
@@ -59,6 +60,16 @@ PROVIDERS: dict[str, Provider] = {
         ),
         color="#ffb86c",
     ),
+    "agnes": Provider(
+        key="agnes",
+        name="Agnes",
+        base_url="https://apihub.agnes-ai.com/v1",
+        api_key=os.environ.get(
+            "AGNES_API_KEY",
+            "sk-fKLLAlhfkYdwCMrznXi1rKlh3ZQXgNtucHrpPatC7MQCHYVi",
+        ),
+        color="#50fa7b",
+    ),
 }
 
 MODELS: list[Model] = [
@@ -75,6 +86,8 @@ MODELS: list[Model] = [
     Model("deepseek-ai/DeepSeek-V3.2", "tokenrouter", "DeepSeek V3.2",
           supports_reasoning=True),
     Model("moonshotai/Kimi-K2-Instruct", "tokenrouter", "Kimi K2"),
+    Model("agnes-2.5-flash", "agnes", "Agnes 2.5 Flash", tag="FAST",
+          tag_color="green", supports_tools=True, supports_reasoning=True),
 ]
 
 DEFAULT_MODEL_ID = "mimo-v2.5-free"

@@ -57,8 +57,25 @@ def build_payload(model: Model, effort: Effort, messages: list[dict],
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
     if model.supports_reasoning and effort.reasoning_effort:
-        payload["reasoning_effort"] = effort.reasoning_effort
+        payload["reasoning_effort"] = _normalize_reasoning_effort(
+            model.provider, effort.reasoning_effort)
     return payload
+
+
+# Providers accept different reasoning-effort vocabularies. Map our internal
+# levels onto what each backend actually accepts; unknown providers pass
+# through unchanged.
+_REASONING_EFFORT_MAP: dict[str, dict[str, str]] = {
+    # sglang-backed Agnes: none | low | medium | high | max
+    "agnes": {"low": "low", "medium": "medium", "xhigh": "max"},
+}
+
+
+def _normalize_reasoning_effort(provider_key: str, value: str) -> str:
+    mapping = _REASONING_EFFORT_MAP.get(provider_key)
+    if mapping is None:
+        return value
+    return mapping.get(value, value)
 
 
 def _iter_sse_events(resp: requests.Response) -> Iterator[dict]:

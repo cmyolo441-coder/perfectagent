@@ -288,33 +288,74 @@ def web_fetch(url: str) -> str:
     return _clip(text.strip(), 16_000)
 
 
-def web_search(query: str) -> str:
-    """Search the web via DuckDuckGo and return top results."""
+def _ddg_search(query: str) -> list[tuple[str, str, str]]:
+    """DuckDuckGo HTML search -> [(title, url, snippet)]."""
     import requests
-    try:
-        resp = requests.post(
-            "https://html.duckduckgo.com/html/",
-            data={"q": query}, timeout=30,
-            headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) FullAgent/1.0"})
-        resp.raise_for_status()
-    except Exception as e:
-        return f"ERROR: {e}"
+    resp = requests.post(
+        "https://html.duckduckgo.com/html/",
+        data={"q": query}, timeout=30,
+        headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) FullAgent/1.0"})
+    resp.raise_for_status()
     results = re.findall(
         r'<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>',
         resp.text)
     snippets = re.findall(
         r'class="result__snippet"[^>]*>([\s\S]*?)</a>', resp.text)
-    if not results:
-        return "no results"
-    lines = []
-    for i, (href, title) in enumerate(results[:8]):
+    out = []
+    for i, (href, title) in enumerate(results):
         title = re.sub(r"<[^>]+>", "", title).strip()
-        snip = re.sub(r"<[^>]+>", "", snippets[i]).strip() if i < len(snippets) else ""
+        snip = re.sub(r"<[^>]+>", "", snippets[i]).strip() \
+            if i < len(snippets) else ""
         m = re.search(r"uddg=([^&]+)", href)
         if m:
             import urllib.parse
             href = urllib.parse.unquote(m.group(1))
-        lines.append(f"{i + 1}. {title}\n   {href}\n   {snip[:200]}")
+        out.append((title, href, snip))
+    return out
+
+
+def _bing_search(query: str) -> list[tuple[str, str, str]]:
+    """Bing HTML search fallback -> [(title, url, snippet)]."""
+    import requests
+    resp = requests.get(
+        "https://www.bing.com/search",
+        params={"q": query, "count": "10"}, timeout=30,
+        headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) "
+                               "Gecko/20100101 Firefox/128.0"})
+    resp.raise_for_status()
+    out = []
+    for block in re.findall(r'<li class="b_algo"[\s\S]*?</li>', resp.text):
+        m = re.search(r'<h2><a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>', block)
+        if not m:
+            continue
+        url, title = m.group(1), re.sub(r"<[^>]+>", "", m.group(2)).strip()
+        sm = re.search(r'<p[^>]*>([\s\S]*?)</p>', block)
+        snip = re.sub(r"<[^>]+>", "", sm.group(1)).strip() if sm else ""
+        out.append((title, url, snip))
+    return out
+
+
+def web_search(query: str) -> str:
+    """Real-time web search. Tries DuckDuckGo, then Bing; returns the top
+    results with titles, URLs and snippets, stamped with the retrieval
+    time so the data's freshness is explicit."""
+    from datetime import datetime
+    errors = []
+    results: list[tuple[str, str, str]] = []
+    for engine, fn in (("DuckDuckGo", _ddg_search), ("Bing", _bing_search)):
+        try:
+            results = fn(query)
+            if results:
+                break
+        except Exception as e:
+            errors.append(f"{engine}: {e}")
+    if not results:
+        return ("ERROR: all search engines failed — "
+                + "; ".join(errors) if errors else "no results")
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [f"web search: {query!r}  (retrieved {stamp}, live results)"]
+    for i, (title, url, snip) in enumerate(results[:8], 1):
+        lines.append(f"{i}. {title}\n   {url}\n   {snip[:220]}")
     return "\n".join(lines)
 
 
