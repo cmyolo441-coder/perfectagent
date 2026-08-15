@@ -159,6 +159,33 @@ class State:
     # Mastermind — prompt coherence ledger
     prompt_sealed: list[dict] = field(default_factory=list)
     prompt_dispatches: list[dict] = field(default_factory=list)
+    # v3 advanced subsystems
+    router_decisions: list[dict] = field(default_factory=list)
+    semantic_index: list[dict] = field(default_factory=list)
+    spec_events: list[dict] = field(default_factory=list)
+    daemon_events: list[dict] = field(default_factory=list)
+    heal_events: list[dict] = field(default_factory=list)
+    skill_events: list[dict] = field(default_factory=list)
+    council_events: list[dict] = field(default_factory=list)
+    # v4 professional subsystems
+    lsp_events: list[dict] = field(default_factory=list)
+    dap_events: list[dict] = field(default_factory=list)
+    analysis_events: list[dict] = field(default_factory=list)
+    mutation_events: list[dict] = field(default_factory=list)
+    coverage_events: list[dict] = field(default_factory=list)
+    fuzz_events: list[dict] = field(default_factory=list)
+    graph_events: list[dict] = field(default_factory=list)
+    browser_events: list[dict] = field(default_factory=list)
+    openapi_events: list[dict] = field(default_factory=list)
+    db_events: list[dict] = field(default_factory=list)
+    git_events: list[dict] = field(default_factory=list)
+    ensemble_events: list[dict] = field(default_factory=list)
+    hybrid_events: list[dict] = field(default_factory=list)
+    compress_events: list[dict] = field(default_factory=list)
+    eval_events: list[dict] = field(default_factory=list)
+    sched_events: list[dict] = field(default_factory=list)
+    cache_events: list[dict] = field(default_factory=list)
+    cost_ledger: list[dict] = field(default_factory=list)
     head_seq: int = -1
     branch: str = "main"
 
@@ -456,6 +483,62 @@ def fold(log: EventLog, branch: str | None = None,
             st.prompt_sealed.append(d)
         elif t == "prompt.dispatch":
             st.prompt_dispatches.append(d)
+        elif t == "router.decision":
+            st.router_decisions.append(d)
+        elif t == "semantic.indexed":
+            st.semantic_index.append(d)
+        elif t in ("spec.prefetch", "spec.hit", "spec.miss", "spec.evict"):
+            st.spec_events.append({"type": t, **d})
+        elif t in ("daemon.mission", "daemon.checkpoint", "daemon.tick",
+                   "daemon.wake", "daemon.done"):
+            st.daemon_events.append({"type": t, **d})
+        elif t in ("heal.captured", "heal.hypothesis", "heal.patch",
+                   "heal.retry", "heal.lesson"):
+            st.heal_events.append({"type": t, **d})
+        elif t in ("skill.authored", "skill.validated", "skill.registered",
+                   "skill.rejected"):
+            st.skill_events.append({"type": t, **d})
+        elif t in ("council.convened", "council.position", "council.verdict"):
+            st.council_events.append({"type": t, **d})
+        elif t in ("lsp.session", "lsp.symbols", "lsp.references",
+                   "lsp.diagnostics"):
+            st.lsp_events.append({"type": t, **d})
+        elif t in ("dap.session", "dap.breakpoint", "dap.stopped",
+                   "dap.variables"):
+            st.dap_events.append({"type": t, **d})
+        elif t in ("analysis.taint", "analysis.complexity",
+                   "analysis.cycles"):
+            st.analysis_events.append({"type": t, **d})
+        elif t in ("mutation.run", "mutation.result"):
+            st.mutation_events.append({"type": t, **d})
+        elif t in ("coverage.run", "coverage.result"):
+            st.coverage_events.append({"type": t, **d})
+        elif t in ("fuzz.run", "fuzz.crash", "fuzz.shrunk"):
+            st.fuzz_events.append({"type": t, **d})
+        elif t in ("graph.entity", "graph.relation", "graph.query"):
+            st.graph_events.append({"type": t, **d})
+        elif t in ("browser.navigate", "browser.action", "browser.extract"):
+            st.browser_events.append({"type": t, **d})
+        elif t in ("openapi.compiled", "openapi.call"):
+            st.openapi_events.append({"type": t, **d})
+        elif t in ("db.query", "db.schema"):
+            st.db_events.append({"type": t, **d})
+        elif t in ("git.diff", "git.commit", "git.blame"):
+            st.git_events.append({"type": t, **d})
+        elif t in ("ensemble.run", "ensemble.verdict"):
+            st.ensemble_events.append({"type": t, **d})
+        elif t in ("hybrid.indexed", "hybrid.query"):
+            st.hybrid_events.append({"type": t, **d})
+        elif t in ("compress.run",):
+            st.compress_events.append({"type": t, **d})
+        elif t in ("eval.task", "eval.result"):
+            st.eval_events.append({"type": t, **d})
+        elif t in ("sched.job", "sched.fired"):
+            st.sched_events.append({"type": t, **d})
+        elif t in ("cache.metrics",):
+            st.cache_events.append({"type": t, **d})
+        elif t in ("cost.entry",):
+            st.cost_ledger.append(d)
         elif t == "judge.verdict":
             st.verdicts.append(d)
         elif t == "snapshot.taken":

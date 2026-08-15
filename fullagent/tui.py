@@ -19,6 +19,7 @@ import shutil
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Callable
 
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -215,6 +216,19 @@ SLASH_COMMANDS = [
     ("/auto", "autopilot self-routing — /auto [on|off|status]"),
     ("/prompt", "system prompt — /prompt [main|master|list]"),
     ("/mastermind", "prompt coherence ledger — sealed prompts, gate, lineage"),
+    ("/dashboard", "live observability — cost, goal, agents, router, spec"),
+    ("/router", "smart model routing — decisions + savings"),
+    ("/spec", "speculative execution — prefetch stats + hit-rate"),
+    ("/recall", "semantic memory — /recall <question>"),
+    ("/mission", "daemon missions — /mission [start|tick|list|abandon]"),
+    ("/heal", "self-healing ledger — root causes captured + healed"),
+    ("/skills", "skill forge — self-authored tools"),
+    ("/council", "adversarial debate — /council <proposition>"),
+    ("/analyze", "static analysis — /analyze <path> (taint, complexity, cycles)"),
+    ("/graph", "knowledge graph — /graph [index <path>|query <name>|impact <name>]"),
+    ("/coverage", "line-coverage ledger — last measured runs"),
+    ("/fuzz", "fuzzing ledger — runs, crashes, shrunk reproducers"),
+    ("/mutate", "mutation testing — /mutate <file> <suite-command>"),
     ("/help", "commands and key bindings"),
     ("/clear", "clear the screen"),
     ("/new", "fresh conversation"),
@@ -912,6 +926,32 @@ class UI:
             self._cmd_prompt(arg)
         elif cmd == "/mastermind":
             self.print_info(self.agent.mastermind.format_status(), C["pink"])
+        elif cmd == "/dashboard":
+            self.print_info(self.agent.dashboard.render(), C["cyan"])
+        elif cmd == "/router":
+            self.print_info(self.agent.router.format_status(), C["green"])
+        elif cmd == "/spec":
+            self.print_info(self.agent.speculator.format_status(), C["cyan"])
+        elif cmd == "/recall":
+            self._cmd_recall(arg)
+        elif cmd == "/mission":
+            self._cmd_mission(arg)
+        elif cmd == "/heal":
+            self.print_info(self.agent.healer.format_status(), C["yellow"])
+        elif cmd == "/skills":
+            self.print_info(self.agent.skill_forge.format_status(), C["pink"])
+        elif cmd == "/council":
+            self._cmd_council(arg)
+        elif cmd == "/analyze":
+            self._cmd_analyze(arg)
+        elif cmd == "/graph":
+            self._cmd_graph(arg)
+        elif cmd == "/coverage":
+            self.print_info(self.agent.coverage.format_status(), C["cyan"])
+        elif cmd == "/fuzz":
+            self.print_info(self.agent.fuzzer.format_status(), C["yellow"])
+        elif cmd == "/mutate":
+            self._cmd_mutate(arg)
         elif cmd == "/about":
             from . import __version__
             self.print_info(f"{APP_NAME} v{__version__} — advanced terminal "
@@ -1464,6 +1504,196 @@ class UI:
         size = len(self.agent._base_prompt())
         self.print_info(f"✓ system prompt → {sub} ({size:,} chars) — "
                         "applies from the next model call", C["green"])
+
+    # -- v3 advanced subsystem commands ----------------------------------------
+
+    def _cmd_recall(self, arg: str) -> None:
+        """Semantic (meaning-based) recall over the episodic corpus."""
+        query = arg.strip()
+        if not query:
+            s = self.agent.semantic.stats()
+            self.print_info(f"semantic memory: {s['items']} items indexed "
+                            f"{s['kinds']} — usage: /recall <question>",
+                            C["cyan"])
+            return
+        hits = self.agent.semantic.recall(query, k=5)
+        if not hits:
+            self.print_info(f"no memories similar to: {query}", C["dim"])
+            return
+        lines = [f"SEMANTIC RECALL — {query}"]
+        for h in hits:
+            lines.append(f"  [{h['kind']} {h['similarity']:.2f}] {h['text']}")
+        self.print_info("\n".join(lines), C["cyan"])
+
+    def _cmd_mission(self, arg: str) -> None:
+        """Daemon mission control: /mission start <stmt> | task1 | task2,
+        /mission tick <id>, /mission list, /mission abandon <id>."""
+        parts = arg.split(None, 1)
+        sub = parts[0].lower() if parts else "list"
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        d = self.agent.daemon
+        if sub in ("", "list", "status"):
+            self.print_info(d.format_status(), C["cyan"])
+            return
+        if sub == "start":
+            if not rest:
+                self.print_error("usage: /mission start <statement> | "
+                                 "task1 | task2 | …")
+                return
+            segs = [s.strip() for s in rest.split("|") if s.strip()]
+            statement = segs[0]
+            tasks = segs[1:] if len(segs) > 1 else [statement]
+            m = d.start(statement, tasks)
+            self.print_info(f"✓ mission {m.mission_id} started — "
+                            f"{len(m.steps)} step(s). Advance with "
+                            f"/mission tick {m.mission_id}", C["green"])
+            return
+        if sub == "tick":
+            mid = rest.strip()
+            if not mid:
+                self.print_error("usage: /mission tick <mission_id>")
+                return
+            r = d.tick(mid)
+            if r.get("error"):
+                self.print_error(f"{r.get('state', '')} "
+                                 f"{r['error']}".strip())
+                return
+            self.print_info(f"mission {mid}: step {r.get('step', '?')} → "
+                            f"{r.get('state', '?')}  "
+                            f"progress {r.get('progress', 0):.0%}\n"
+                            f"  {str(r.get('result', ''))[:200]}", C["cyan"])
+            return
+        if sub == "abandon":
+            mid = rest.strip()
+            if d.abandon(mid, "abandoned by user"):
+                self.print_info(f"✓ mission {mid} abandoned", C["yellow"])
+            else:
+                self.print_error(f"cannot abandon mission {mid!r}")
+            return
+        self.print_error("usage: /mission [start|tick|list|abandon] …")
+
+    def _cmd_council(self, arg: str) -> None:
+        """Convene an adversarial debate: /council <proposition>."""
+        question = arg.strip()
+        if not question:
+            self.print_info(self.agent.council.format_status(), C["pink"])
+            return
+        self.print_info(f"⚖ convening council on: {question} …", C["dim"])
+        v = self.agent.council.convene(question)
+        if not v.ok:
+            self.print_error(f"council failed: {v.error}")
+            return
+        lines = [f"COUNCIL VERDICT — winner: {v.winner.upper()}  "
+                 f"(confidence {v.confidence:.0f}%)",
+                 f"  reason: {v.reason}"]
+        for role, text in v.positions.items():
+            lines.append(f"  [{role}] {text[:200]}")
+        self.print_info("\n".join(lines), C["pink"])
+
+    # -- v4 professional subsystem commands ------------------------------------
+
+    def _cmd_analyze(self, arg: str) -> None:
+        """Static analysis: /analyze <path> — taint, complexity, cycles."""
+        path = arg.strip() or "."
+        p = Path(path).expanduser()
+        if p.is_file():
+            result = self.agent.static.analyze_file(str(p))
+        else:
+            result = self.agent.static.analyze_tree(str(p))
+        self.print_info(self.agent.static.format_report(result), C["cyan"])
+
+    def _cmd_graph(self, arg: str) -> None:
+        """Knowledge graph: /graph [index <path>|query <name>|impact <name>]."""
+        parts = arg.split(None, 1)
+        sub = parts[0].lower() if parts else ""
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        kg = self.agent.kgraph
+        if sub in ("", "status"):
+            self.print_info(kg.format_status(), C["cyan"])
+            return
+        if sub == "index":
+            root = Path(rest or ".").expanduser()
+            files = ([root] if root.is_file()
+                     else sorted(root.glob("**/*.py"))[:200])
+            sources = {}
+            for f in files:
+                if f.is_file():
+                    try:
+                        sources[f.stem] = f.read_text(errors="replace")
+                    except OSError:
+                        continue
+            n = kg.index_code(sources)
+            kg.index_log()
+            self.print_info(f"✓ indexed {len(sources)} module(s) → "
+                            f"{n} entities\n{kg.format_status()}", C["green"])
+            return
+        if sub == "query":
+            if not rest:
+                self.print_error("usage: /graph query <name>")
+                return
+            hits = kg.find(rest)
+            if not hits:
+                self.print_info(f"no entity matching {rest!r} — "
+                                f"/graph index first", C["dim"])
+                return
+            lines = []
+            for e in hits[:20]:
+                lines.append(f"{e.kind} {e.id}  ({e.name})")
+                for r in kg.out_edges(e.id)[:8]:
+                    lines.append(f"    --{r.rel}--> {r.dst}")
+                for r in kg.in_edges(e.id)[:8]:
+                    lines.append(f"    <--{r.rel}-- {r.src}")
+            self.print_info("\n".join(lines), C["cyan"])
+            return
+        if sub == "impact":
+            if not rest:
+                self.print_error("usage: /graph impact <name>")
+                return
+            hits = kg.find(rest)
+            if not hits:
+                self.print_info(f"no entity matching {rest!r} — "
+                                f"/graph index first", C["dim"])
+                return
+            lines = []
+            for e in hits[:5]:
+                dep = kg.impact(e.id)
+                lines.append(f"{e.id}: {len(dep)} dependent(s)")
+                lines.extend(f"    {d}" for d in dep[:20])
+            self.print_info("\n".join(lines), C["yellow"])
+            return
+        self.print_error("usage: /graph [index <path>|query <name>|"
+                         "impact <name>]")
+
+    def _cmd_mutate(self, arg: str) -> None:
+        """Mutation testing: /mutate <file> <suite-command>. Runs the suite
+        against AST-generated mutants; survivors are holes in the tests."""
+        parts = arg.split(None, 1)
+        if len(parts) < 2:
+            if self.agent.mutator is not None:
+                self.print_info(self.agent.mutator.format_status(),
+                                C["yellow"])
+            else:
+                self.print_error("usage: /mutate <file> <suite-command>  "
+                                 "(e.g. /mutate src/x.py 'python -m pytest "
+                                 "-q tests/')")
+            return
+        from .mutate import MutationTester
+        path, suite = parts[0], parts[1]
+        if not Path(path).expanduser().is_file():
+            self.print_error(f"not a file: {path}")
+            return
+        self.print_info(f"⚙ mutating {path} — suite: {suite} …", C["dim"])
+        tester = MutationTester(self.agent.log, suite)
+        report = tester.run(path)
+        self.agent.mutator = tester
+        lines = [f"MUTATION — {report.path}",
+                 f"  score {report.score:.0%}   killed {report.killed}   "
+                 f"survived {report.survived}   errors {report.errors}   "
+                 f"total {report.total}"]
+        for r in report.results:
+            if r.status == "survived":
+                lines.append(f"    ⚠ SURVIVED [{r.kind}] {r.description}")
+        self.print_info("\n".join(lines), C["yellow"])
 
     # -- turn execution (worker thread) ---------------------------------------------------------
 

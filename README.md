@@ -111,6 +111,20 @@ Event-log commands:
   or `master` (the extended 130k+ specification prompt)
 - `/mastermind` — the prompt-coherence ledger (sealed prompts, gate,
   composed context, lineage)
+- `/dashboard` — live observability: cost, goal, agents, router, spec,
+  memory, health in one screen
+- `/router` — smart model routing: decisions + savings vs always-strongest
+- `/spec` — speculative execution: prefetch stats + hit-rate
+- `/recall <question>` — semantic (meaning-based) memory recall
+- `/mission [start|tick|list|abandon]` — daemon mission control
+- `/heal` — self-healing ledger: root causes captured + healed
+- `/skills` — the skill forge: self-authored, safety-gated tools
+- `/council <proposition>` — convene an adversarial debate
+- `/analyze <path>` — static analysis: taint flows, complexity, cycles
+- `/graph [index|query|impact]` — knowledge graph of code + session
+- `/coverage` — real line-coverage ledger (sys.settrace)
+- `/fuzz` — property-based fuzzing ledger: crashes + shrunk reproducers
+- `/mutate <file> <suite-cmd>` — mutation testing: can your tests catch bugs?
 
 ## Effort levels
 
@@ -153,6 +167,19 @@ fullagent/
   swarm.py         parallel read-only scout sub-agents
   team.py          parallel worker team (up to 8, role-based, write lock)
   autopilot.py     self-routing: auto team / goal mode / real-time web
+  router.py        smart model routing — cheapest capable model per task
+  semantic.py      semantic vector memory — meaning-based recall
+  speculate.py     speculative execution — prefetch read-only tool calls
+  dashboard.py     live observability — real-time ledger projection
+  daemon.py        mission control — resumable long-running missions
+  healer.py        self-healing — root-cause capture, fix, retry, lesson
+  skills.py        skill forge — self-authored, safety-gated tools
+  council.py       adversarial debate — thesis/antithesis + blind judge
+  taint.py         static analysis — taint flows, complexity, import cycles
+  kgraph.py        knowledge graph — entities + typed relations, impact
+  cov.py           real line coverage — sys.settrace measurement
+  fuzz.py          property-based fuzzing — generators + crash shrinking
+  mutate.py        mutation testing — AST mutants vs the test suite
   tui.py           persistent double-line box, overlays, streaming, approval
   __main__.py      entry point
 ```
@@ -160,7 +187,9 @@ fullagent/
 The event log lives at `~/.fullagent/eventlog.jsonl` (override the directory
 with `FULLAGENT_HOME`). Each module ships a self-test:
 `python -m fullagent.kernel` (and `.memory`, `.goal`, `.judge`, `.swarm`,
-`.team`, `.autopilot`, `.systemprompt`, `.mastermind`).
+`.team`, `.autopilot`, `.systemprompt`, `.mastermind`, `.router`,
+`.semantic`, `.speculate`, `.dashboard`, `.daemon`, `.healer`, `.skills`,
+`.council`, `.taint`, `.kgraph`, `.cov`, `.fuzz`, `.mutate`).
 
 ## System prompts — one file, one delivery path
 
@@ -208,3 +237,35 @@ all deterministic Python:
 There is no enforcement layer — the system observes and records
 (PromptLineage), it never punishes. Every dispatch is sealed into the
 event log; inspect the live ledger with `/mastermind`.
+
+## v3 — eight advanced subsystems
+
+All eight are event-sourced on the same Temporal Kernel: every decision,
+prediction, heal, skill and verdict is a sealed event, and every status
+view is a pure fold. Nothing keeps private state, so nothing can drift
+from the log.
+
+| Module | What it does | Command |
+|---|---|---|
+| **router.py** | The cost brain. A deterministic difficulty classifier (reasoning, code density, tooling, length) scores each task; a capability/cost table scores the models; the cheapest model that clears the task's difficulty + a quality margin wins. Tool-needing tasks never land on no-tool models; a pinned model that can't do the job is escalated past. Savings vs always-using-the-strongest are auditable. | `/router` |
+| **semantic.py** | Hippocampus 2.0. Every episode, fact and dead-end is embedded via signed feature hashing (stdlib only, no numpy) and recalled by cosine similarity — "how did we solve a similar problem before?", including remembering what *failed*. The index is a pure projection of the log and refreshes itself. Recall is injected into the memory context section each turn. | `/recall <q>` |
+| **speculate.py** | While the model thinks, the agent predicts the read-only calls it will likely make (paths in your message, search verbs, siblings of recent reads) and prefetches them in a background pool. When the model actually asks, the result is served from cache — a hit instead of an execution. Only whitelisted read-only tools can ever be prefetched; a speculative write is structurally impossible. | `/spec` |
+| **dashboard.py** | The X-ray: cost, tokens, goal progress bar, sub-agent reports, routing spend, speculation hit-rate, memory counts, verdicts, loop alerts and budget events — one screen, always agreeing with the kernel because it is a fold. | `/dashboard` |
+| **daemon.py** | Mission Control. A mission is a queue of steps advanced one tick at a time; every tick checkpoints, so a restart resumes from the last checkpoint (at most one in-flight tick is lost). A step that exhausts its retries BLOCKS the mission visibly — never silently skipped. Wake conditions are deterministic fold predicates. | `/mission` |
+| **healer.py** | When a tool fails, the healer captures the error, classifies it against a root-cause taxonomy (16 patterns; unknown is honest, never guessed), and seals the lesson. With a fixer + recheck attached it runs the full loop: fix → re-run the original check → only a green re-run counts as healed. Every tool error in the agent loop is captured automatically. | `/heal` |
+| **skills.py** | The self-evolving tool author. A new skill (Python function) passes four gates before it can run: parse → shape (entry fn + docstring) → safety (AST scan: no subprocess/eval/exec/forbidden imports/dunder access/globals) → its own shipped test cases. Passing skills persist to `~/.fullagent/skills/` and register as live tools; failures are sealed with the exact reason. | `/skills` |
+| **council.py** | Adversarial debate for high-stakes calls: THESIS argues for, ANTITHESIS argues against and must attack the thesis's strongest point, then a BLIND judge sees only the two anonymised arguments (never the question's framing) and decides on argument strength alone. Verdicts carry winner, confidence and reason. | `/council <q>` |
+
+## v4 — five professional engineering subsystems
+
+Same discipline as v3: pure stdlib, deterministic, no model calls, every
+result sealed into the Temporal Kernel as an event, every status view a
+pure fold. These are real engineering tools, not estimates.
+
+| Module | What it does | Command / Tool |
+|---|---|---|
+| **taint.py** | Real static analysis over the AST (not regex): taint tracking from declared sources (input, env, network, file reads) to sinks (eval, exec, subprocess, sql, writes) with the exact propagation path; cyclomatic complexity per function with hotspots; module-level import-cycle detection via iterative DFS. | `/analyze <path>` · tool `analyze_code` |
+| **kgraph.py** | The knowledge graph: entities (modules, functions, classes, files, goals, episodes, facts) and typed relations (defines, calls, imports, touches, learned) built straight from the AST and the event fold. Queries are real graph operations — BFS reachability, reverse lookups, and impact sets ("what breaks if I change X?"). | `/graph [index\|query\|impact]` · tools `graph_index`, `graph_query`, `graph_impact` |
+| **cov.py** | Genuine line coverage, not an estimate: `sys.settrace` (the same hook `coverage.py` uses) records every executed line of the target while a subject runs, compared against executable lines derived from the AST. The trace only records — never alters control flow — and is always restored. | `/coverage` · tool `measure_coverage` |
+| **fuzz.py** | Property-based fuzzing: typed generators (int, str, list, dict, bytes) biased toward boundaries (0, -1, empty, huge, unicode), plus mutated inputs. Crashes are SHRUNK to a minimal reproducer — the difference between "it crashed somewhere" and "here is the smallest input that breaks it." Deterministic under a seed. | `/fuzz` · tool `fuzz_target` |
+| **mutate.py** | Mutation testing — answers what tests alone cannot: *can your tests actually catch bugs?* AST NodeTransformers generate real mutants (operator flips, condition negations, broken returns); the suite runs against each. Killed = suite caught it; survived = a real hole. Score = killed / (killed + survived). The original file is always restored. | `/mutate <file> <suite-cmd>` |

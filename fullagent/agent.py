@@ -36,16 +36,29 @@ from .cassette import Cassette
 from .client import APIError, TurnCancelled, chat_blocking, chat_stream
 from .config import Config, Effort, Model, Provider, PROVIDERS, model_by_id
 from .cortex import Budget, BudgetGovernor, LoopDetector
+from .council import Council
+from .cov import CoverageEngine
+from .daemon import Daemon
+from .dashboard import Dashboard
 from .forge import Forge
+from .fuzz import Fuzzer
 from .goal import GoalContract
+from .healer import Healer
 from .judge import Judge
 from .kernel import EventLog, fold
+from .kgraph import KnowledgeGraph
 from .mastermind import Mastermind
 from .memory import Hippocampus
+from .mutate import MutationTester
 from .nexus import Nexus
 from .oracle import Oracle
+from .router import Router
+from .semantic import SemanticMemory
+from .skills import SkillForge
 from .snapshots import SnapshotStore
+from .speculate import Speculator, SPECULATIVE_TOOLS
 from .swarm import Swarm
+from .taint import StaticAnalyzer
 from .team import Team
 from .tools import RISK_CONFIRM, Tool, build_registry, parse_tool_arguments
 
@@ -133,10 +146,33 @@ class Agent:
         self.oracle = Oracle(self.log, memory_dir=config.APP_DIR / "memory")
         self.budget_gov = BudgetGovernor(self.log, Budget())
         self.loop_det = LoopDetector(self.log)
+
+        # v3 advanced subsystems — all event-sourced on the same kernel
+        self.router = Router(self.log)                 # cost brain
+        self.semantic = SemanticMemory(self.log)       # meaning-based recall
+        self.speculator = Speculator(self.log,
+                                     runner=self._spec_runner)
+        self.dashboard = Dashboard(self.log)           # live observability
+        self.daemon = Daemon(self.log,
+                             executor=self._daemon_step)
+        self.healer = Healer(self.log)                 # root-cause capture
+        self.skill_forge = SkillForge(self.log,
+                                      skills_dir=config.APP_DIR / "skills")
+        self.council = Council(self.log, speaker=self._council_speaker)
+
+        # v4 professional subsystems — same kernel, same discipline
+        self.kgraph = KnowledgeGraph(self.log)         # knowledge graph
+        self.static = StaticAnalyzer(self.log)         # taint/complexity
+        self.coverage = CoverageEngine(self.log)       # real line coverage
+        self.fuzzer = Fuzzer(self.log)                 # property fuzzing
+        self.mutator: MutationTester | None = None     # needs a suite cmd
+
         self.autonomy = 3
         self._error_counts: dict[str, int] = {}
         self._file_hashes: dict[str, list[str]] = {}  # oscillation history
         self._register_code_tools()
+        self._register_v4_tools()
+        self._register_persisted_skills()
 
         # cassette: record/replay model calls (FULLAGENT_CASSETTE=path,
         # FULLAGENT_CASSETTE_MODE=record|replay|off)
@@ -207,7 +243,8 @@ class Agent:
                         actor="system")
 
     def _context_sections(self,
-                          route: RouteDecision | None = None
+                          route: RouteDecision | None = None,
+                          query: str = ""
                           ) -> dict[str, str]:
         """Live context sections composed beneath the sealed prompt by the
         Mastermind gate (constitution, goal, web, memory). The framing is
@@ -231,6 +268,12 @@ class Agent:
                                "answer from stale knowledge. Quote the "
                                "retrieval time and sources.")
         mem = self.memory.context_block()
+        # v3: meaning-based recall — pull the episodes/facts/dead-ends most
+        # similar to the current request, not just the most recent ones.
+        if query:
+            recall = self.semantic.recall_block(query, k=3)
+            if recall:
+                mem = (mem + "\n\n" + recall) if mem else recall
         if mem:
             sections["memory"] = mem
         return sections
@@ -272,7 +315,15 @@ class Agent:
         # sealed prompt is guaranteed at position 0, live context sections
         # (constitution + goal + web + memory) are composed beneath it.
         self._reseat_system_prompt(
-            sections=self._context_sections(route))
+            sections=self._context_sections(route, query=user_text))
+
+        # v3: speculate on the read-only calls this turn will likely make —
+        # they run in the background while the model thinks (zero-latency
+        # feel). Only whitelisted read-only tools are ever prefetched.
+        recent_tools = [{"name": t.name, "args": t.args}
+                        for tn in self.turns[-2:] for t in tn.tools]
+        self.speculator.speculate(user_text, recent_tools)
+
         self.messages.append({"role": "user", "content": user_text})
         user_ev = self.log.append("user.message",
                                   {"text": user_text,
@@ -641,15 +692,22 @@ class Agent:
                         correlation_id=clause_id)
 
         on_status(f"running:{ev.name}")
-        try:
-            ev.result = tool.handler(**ev.args)
+        # v3: if the Speculator already prefetched this exact read-only
+        # call, serve it from the cache instead of re-running (a hit).
+        cached = self.speculator.serve(ev.name, ev.args)
+        if cached is not None:
+            ev.result = cached
             ev.status = "done"
-        except TypeError as e:
-            ev.result = f"ERROR: bad arguments for {ev.name}: {e}"
-            ev.status = "error"
-        except Exception as e:  # noqa: BLE001 — tool errors go back to the LLM
-            ev.result = f"ERROR: {type(e).__name__}: {e}"
-            ev.status = "error"
+        else:
+            try:
+                ev.result = tool.handler(**ev.args)
+                ev.status = "done"
+            except TypeError as e:
+                ev.result = f"ERROR: bad arguments for {ev.name}: {e}"
+                ev.status = "error"
+            except Exception as e:  # noqa: BLE001 — tool errors go back to the LLM
+                ev.result = f"ERROR: {type(e).__name__}: {e}"
+                ev.status = "error"
         # most handlers report failure as an "ERROR: …" string rather than
         # raising — count those as errors too, so the dead-end ledger works
         if ev.status == "done" and ev.result.startswith("ERROR:"):
@@ -691,6 +749,15 @@ class Agent:
                     signature=sig,
                     reason=f"{ev.name} failed twice: {ev.result[:200]}",
                     scope="session", confidence="contextual")
+            # v3: healer captures + classifies the root cause and seals a
+            # lesson, so the same failure is recognised instantly next time.
+            # (No fixer attached here — the agent reads the diagnosis and
+            # decides the fix; the healer never mutates on its own.)
+            try:
+                self.healer.heal(ev.result,
+                                 context=f"{ev.name} {ev.args}")
+            except Exception:
+                pass
 
         # §13.4 exact-repeat detection over recent tool calls
         self.loop_det.detect()
@@ -786,6 +853,254 @@ class Agent:
                 "name": {"type": "string"},
                 "path": {"type": "string"}}, "required": ["name"]},
             code_impact)
+
+    def _register_v4_tools(self) -> None:
+        """Add the deterministic v4 engineering tools (rung 2-4) to the
+        registry: static analysis, knowledge graph, coverage, fuzzing."""
+        static = self.static
+        kgraph = self.kgraph
+        coverage = self.coverage
+        fuzzer = self.fuzzer
+
+        def analyze_code(path: str = ".", glob_filter: str = "*.py",
+                         max_files: int = 50) -> str:
+            p = Path(path).expanduser()
+            if p.is_file():
+                return static.format_report(static.analyze_file(str(p)))
+            tree = static.analyze_tree(str(p), glob_filter, max_files)
+            return static.format_report(tree)
+
+        def graph_index(path: str = ".") -> str:
+            p = Path(path).expanduser()
+            sources: dict[str, str] = {}
+            files = ([p] if p.is_file()
+                     else sorted(p.glob("**/*.py"))[:200])
+            for f in files:
+                if f.is_file():
+                    try:
+                        sources[f.stem] = f.read_text(errors="replace")
+                    except OSError:
+                        continue
+            kgraph.index_code(sources)
+            kgraph.index_log()
+            return kgraph.format_status()
+
+        def graph_query(name: str, kind: str = "") -> str:
+            hits = kgraph.find(name, kind or None)
+            if not hits:
+                return f"no entity matching {name!r} — run graph_index first"
+            lines = []
+            for e in hits[:20]:
+                lines.append(f"{e.kind} {e.id}  ({e.name})")
+                for r in kgraph.out_edges(e.id)[:8]:
+                    lines.append(f"    --{r.rel}--> {r.dst}")
+                for r in kgraph.in_edges(e.id)[:8]:
+                    lines.append(f"    <--{r.rel}-- {r.src}")
+            return "\n".join(lines)
+
+        def graph_impact(name: str) -> str:
+            hits = kgraph.find(name)
+            if not hits:
+                return f"no entity matching {name!r} — run graph_index first"
+            lines = []
+            for e in hits[:5]:
+                dep = kgraph.impact(e.id)
+                lines.append(f"{e.id}: {len(dep)} dependent(s)")
+                lines.extend(f"    {d}" for d in dep[:20])
+            return "\n".join(lines)
+
+        def measure_coverage(path: str, command: str) -> str:
+            """Coverage of `path` while `command` (a python -c snippet or
+            test command) runs. The subject is executed via subprocess so
+            the trace stays inside this process only for the import."""
+            tp = Path(path).expanduser()
+            if not tp.is_file():
+                return f"ERROR: not a file: {tp}"
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                tp.stem, str(tp.resolve()))
+            if spec is None or spec.loader is None:
+                return f"ERROR: cannot import {tp}"
+            mod = importlib.util.module_from_spec(spec)
+
+            def subject():
+                spec.loader.exec_module(mod)
+                # run the command as a python expression against the module
+                eval(compile(command, "<coverage-subject>", "exec"),
+                     {"mod": mod, "__name__": "__coverage__"})
+
+            res = coverage.measure(str(tp), subject)
+            missed = ", ".join(str(m) for m in res.missed[:30])
+            return (f"coverage {res.percent:.0f}%  "
+                    f"({res.hit}/{res.total} lines)\nmissed: {missed}")
+
+        def fuzz_target(path: str, function: str, iterations: int = 200,
+                        nargs: int = 1) -> str:
+            tp = Path(path).expanduser()
+            if not tp.is_file():
+                return f"ERROR: not a file: {tp}"
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                f"fuzz_{tp.stem}", str(tp.resolve()))
+            if spec is None or spec.loader is None:
+                return f"ERROR: cannot import {tp}"
+            mod = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(mod)
+            except Exception as e:
+                return f"ERROR: import failed: {type(e).__name__}: {e}"
+            fn = getattr(mod, function, None)
+            if not callable(fn):
+                return f"ERROR: no callable {function!r} in {tp}"
+            report = fuzzer.fuzz(fn, iterations=iterations, nargs=nargs,
+                                 name=f"{tp.stem}.{function}")
+            lines = [f"fuzz {report.target}: {report.iterations} runs, "
+                     f"{report.crashes} crash(es), "
+                     f"{report.invariant_failures} invariant failure(s)"]
+            if report.first_crash:
+                c = report.first_crash
+                lines.append(f"  first crash: {c.error}")
+                lines.append(f"    args: {repr(c.args)[:120]}")
+                lines.append(f"    shrunk: {repr(c.shrunk_args)[:120]} "
+                             f"→ {c.shrunk_error}")
+            return "\n".join(lines)
+
+        self.tools["analyze_code"] = Tool(
+            "analyze_code",
+            "Static analysis of a file or tree: taint flows (source→sink), "
+            "cyclomatic complexity hotspots, import cycles. Deterministic "
+            "AST analysis. Args: path, glob_filter, max_files.",
+            {"type": "object", "properties": {
+                "path": {"type": "string"},
+                "glob_filter": {"type": "string"},
+                "max_files": {"type": "integer"}}, "required": []},
+            analyze_code)
+        self.tools["graph_index"] = Tool(
+            "graph_index",
+            "Build the knowledge graph (entities + typed relations) from "
+            "Python sources under path, plus the session log. Args: path.",
+            {"type": "object", "properties": {
+                "path": {"type": "string"}}, "required": []},
+            graph_index)
+        self.tools["graph_query"] = Tool(
+            "graph_query",
+            "Query the knowledge graph: find entities by name and show "
+            "their relations. Args: name, kind (optional).",
+            {"type": "object", "properties": {
+                "name": {"type": "string"},
+                "kind": {"type": "string"}}, "required": ["name"]},
+            graph_query)
+        self.tools["graph_impact"] = Tool(
+            "graph_impact",
+            "Impact analysis over the knowledge graph: everything that "
+            "depends on this entity ('what breaks if I change X?'). "
+            "Args: name.",
+            {"type": "object", "properties": {
+                "name": {"type": "string"}}, "required": ["name"]},
+            graph_impact)
+        self.tools["measure_coverage"] = Tool(
+            "measure_coverage",
+            "Real line coverage (sys.settrace) of a Python file while a "
+            "subject snippet runs. Args: path (file under test), command "
+            "(python code executed with the module bound as `mod`).",
+            {"type": "object", "properties": {
+                "path": {"type": "string"},
+                "command": {"type": "string"}},
+                "required": ["path", "command"]},
+            measure_coverage, risk=RISK_CONFIRM)
+        self.tools["fuzz_target"] = Tool(
+            "fuzz_target",
+            "Property-based fuzzing of a function: generated + boundary + "
+            "mutated inputs, crash shrinking to a minimal reproducer. "
+            "Args: path, function, iterations, nargs.",
+            {"type": "object", "properties": {
+                "path": {"type": "string"},
+                "function": {"type": "string"},
+                "iterations": {"type": "integer"},
+                "nargs": {"type": "integer"}},
+                "required": ["path", "function"]},
+            fuzz_target, risk=RISK_CONFIRM)
+
+    # -- v3 subsystem callbacks ------------------------------------------------
+
+    def _spec_runner(self, name: str, args: dict) -> str:
+        """Execute one read-only tool call for the Speculator. Only the
+        whitelisted read-only tools ever reach here (the speculator gates
+        on SPECULATIVE_TOOLS before calling)."""
+        if name not in SPECULATIVE_TOOLS:
+            return f"ERROR: {name} is not speculative-safe"
+        tool = self.tools.get(name)
+        if tool is None:
+            return f"ERROR: unknown tool {name}"
+        try:
+            return tool.handler(**args)
+        except Exception as e:
+            return f"ERROR: {type(e).__name__}: {e}"
+
+    def _daemon_step(self, task: str) -> str:
+        """Run one daemon mission step. A step is executed as a read-only
+        scout-style probe by default — the daemon advances missions without
+        mutating the world unless a write is explicitly part of the task.
+        Returns 'ERROR: …' on failure so the daemon can retry/block."""
+        try:
+            reports = self.swarm.scout([task], context=self.scout_context(),
+                                       timeout=120.0)
+        except Exception as e:
+            return f"ERROR: {type(e).__name__}: {e}"
+        if not reports:
+            return "ERROR: daemon step produced no report"
+        r = reports[0]
+        if not r.ok:
+            return f"ERROR: {r.error or 'step failed'}"
+        return f"OK: {r.answer[:400]}"
+
+    def _council_speaker(self, role: str, brief: str) -> str:
+        """Produce one council position through the model (blocking, no
+        tools). The synthesis brief is already blind — it carries only the
+        two arguments."""
+        messages = [{"role": "system",
+                     "content": "You are one voice in a structured debate "
+                                "council. Answer exactly as instructed."},
+                    {"role": "user", "content": brief}]
+        result = chat_blocking(self.provider, self.model, self.effort,
+                               messages, None, timeout=120.0)
+        return result.content or ""
+
+    def _register_persisted_skills(self) -> None:
+        """Load previously forged skills from disk and expose them as tools.
+        Only skills that re-pass the safety scan are loaded."""
+        try:
+            self.skill_forge.load_persisted()
+        except Exception:
+            return
+        for name, skill in self.skill_forge.registry.items():
+            if name in self.tools:
+                continue
+            self._expose_skill(name, skill)
+
+    def _expose_skill(self, name: str, skill) -> None:
+        """Wrap a validated skill as a live Tool in the registry."""
+        try:
+            namespace = self.skill_forge._load(skill)
+        except Exception:
+            return
+        fn = namespace.get(skill.entry or name)
+        if not callable(fn):
+            return
+
+        def handler(_fn=fn, **kwargs):
+            try:
+                return str(_fn(**kwargs))
+            except Exception as e:
+                return f"ERROR: {type(e).__name__}: {e}"
+
+        props = skill.parameters or {}
+        schema = {"type": "object",
+                  "properties": {k: (v if isinstance(v, dict)
+                                     else {"type": "string"})
+                                 for k, v in props.items()}}
+        self.tools[name] = Tool(name, skill.description or name,
+                                schema, handler)
 
     # -- swarm (§16) ---------------------------------------------------------
 
