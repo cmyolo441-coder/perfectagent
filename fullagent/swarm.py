@@ -17,6 +17,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
+from . import systemprompt
 from .client import APIError, chat_blocking
 from .config import Effort, Model, Provider
 from .kernel import EventLog, fold
@@ -34,13 +35,7 @@ RATE_LIMIT_BASE_WAIT = 2.0
 # and a scout simply has no write path at all.
 SCOUT_TOOL_NAMES = ("read_file", "list_dir", "file_info",
                     "search_files", "glob_files")
-
-SCOUT_SYSTEM_PROMPT = """You are a read-only scout sub-agent of FullAgent. You gather information only; you never modify anything. You have read-only tools: read_file, list_dir, file_info, search_files, glob_files. Use them to find real evidence before answering.
-
-Answer the given question concisely and factually in <= 120 words: names, paths, numbers, verdicts. No preamble, no filler, no speculation beyond what the evidence supports. If you cannot determine the answer, say so plainly.
-
-End your reply with a final line exactly in this form:
-Confidence: <0-100>%"""
+# The scout's system prompt lives in systemprompt.py — single source.
 
 _CONFIDENCE_RE = re.compile(r"confidence:\s*(\d+(?:\.\d+)?)\s*%", re.IGNORECASE)
 
@@ -84,12 +79,17 @@ class Swarm:
     """Fan-out of parallel read-only scouts over a shared EventLog."""
 
     def __init__(self, log: EventLog, provider: Provider, model: Model,
-                 effort: Effort, max_parallel: int = 8) -> None:
+                 effort: Effort, max_parallel: int = 8,
+                 mastermind=None) -> None:
         self.log = log
         self.provider = provider
         self.model = model
         self.effort = effort
         self.max_parallel = max(1, int(max_parallel))
+        # Mastermind gate: when attached, every scout prompt is served
+        # hash-sealed through the single door to the model. Standalone
+        # (self-tests) falls back to the module source.
+        self.mastermind = mastermind
         # read-only whitelist carved out of the main registry
         registry = build_registry()
         self.tools: dict[str, Tool] = {
@@ -120,6 +120,26 @@ class Swarm:
             self.log.append("swarm.report", r.to_dict())
         return reports
 
+    def _chat(self, messages: list[dict], schemas: list[dict] | None,
+              timeout: float):
+        """chat_blocking with rate-limit retry + exponential backoff."""
+        last_err: Exception | None = None
+        for attempt in range(RATE_LIMIT_RETRIES):
+            try:
+                return chat_blocking(self.provider, self.model, self.effort,
+                                     messages, schemas, timeout=timeout)
+            except APIError as e:
+                msg = str(e).lower()
+                rate_limited = (e.status == 429 or "rate limit" in msg
+                                or "too many requests" in msg)
+                if not rate_limited:
+                    raise
+                last_err = e
+                wait = RATE_LIMIT_BASE_WAIT * (2 ** attempt) \
+                    + random.uniform(0, 1.5)
+                time.sleep(wait)
+        raise last_err  # type: ignore[misc]
+
     def _run_one(self, question: str, context: str,
                  timeout: float) -> ScoutReport:
         """One scout: fresh [system, user] context, read-only tools only,
@@ -127,15 +147,17 @@ class Swarm:
         t0 = time.monotonic()
         user = (f"Context:\n{context}\n\nQuestion: {question}" if context
                 else f"Question: {question}")
-        messages = [{"role": "system", "content": SCOUT_SYSTEM_PROMPT},
-                    {"role": "user", "content": user}]
+        messages: list[dict] = []
+        if self.mastermind is not None:
+            messages, _ = self.mastermind.gate.dispatch("scout", messages)
+        else:
+            systemprompt.with_system(messages, systemprompt.scout())
+        messages.append({"role": "user", "content": user})
         schemas = ([t.openai_schema() for t in self.tools.values()]
                    if self.model.supports_tools else None)
         try:
             for _ in range(MAX_SCOUT_TOOL_STEPS):
-                result = chat_blocking(self.provider, self.model,
-                                       self.effort, messages, schemas,
-                                       timeout=timeout)
+                result = self._chat(messages, schemas, timeout)
                 if not result.tool_calls:
                     break
                 messages.append({"role": "assistant",
@@ -163,15 +185,14 @@ class Swarm:
                 messages.append({"role": "user",
                                  "content": "Tool budget exhausted. Answer "
                                             "now with what you have."})
-                result = chat_blocking(self.provider, self.model,
-                                       self.effort, messages, None,
-                                       timeout=timeout)
+                result = self._chat(messages, None, timeout)
         except Exception as e:
             return ScoutReport(question=question, answer="", confidence=0.0,
                                ok=False, error=str(e),
                                elapsed_ms=int((time.monotonic() - t0) * 1000))
-        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
         content = (result.content or "").strip()
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
         answer = _strip_confidence_line(content)
         if len(answer) > MAX_ANSWER_CHARS:
             answer = answer[:MAX_ANSWER_CHARS] + " …[truncated]"

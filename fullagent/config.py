@@ -17,6 +17,8 @@ EVENT_LOG_FILE = APP_DIR / "eventlog.jsonl"
 DEFAULT_TIMEOUT = 300.0
 MAX_TOOL_ITERATIONS = 40
 MAX_TOOL_OUTPUT_CHARS = 24_000
+# One output ceiling for every effort level: 200k tokens.
+MAX_TOKENS = 200_000
 
 
 @dataclass(frozen=True)
@@ -105,15 +107,15 @@ class Effort:
 
 
 EFFORTS: list[Effort] = [
-    Effort("low", "LOW", "#6272a4", 1024, 0.2, "low",
+    Effort("low", "LOW", "#6272a4", MAX_TOKENS, 0.2, "low",
            "short answers, minimal tokens"),
-    Effort("medium", "MEDIUM", "#8be9fd", 4096, 0.4, "medium",
+    Effort("medium", "MEDIUM", "#8be9fd", MAX_TOKENS, 0.4, "medium",
            "balanced length and speed"),
-    Effort("high", "HIGH", "#50fa7b", 8192, 0.6, "xhigh",
+    Effort("high", "HIGH", "#50fa7b", MAX_TOKENS, 0.6, "xhigh",
            "thorough, detailed answers"),
-    Effort("extrahigh", "EXTRA HIGH", "#ffb86c", 16384, 0.7, "xhigh",
+    Effort("extrahigh", "EXTRA HIGH", "#ffb86c", MAX_TOKENS, 0.7, "xhigh",
            "deep reasoning, long outputs"),
-    Effort("ultrahigh", "ULTRA HIGH", "#ff5555", 32768, 0.8, "xhigh",
+    Effort("ultrahigh", "ULTRA HIGH", "#ff5555", MAX_TOKENS, 0.8, "xhigh",
            "maximum depth, exhaustive work"),
 ]
 
@@ -141,6 +143,8 @@ class Config:
     auto_approve: bool = False
     show_reasoning: bool = False
     theme: str = "dracula"
+    # which system prompt to send: "main" (compact) or "master" (130k+)
+    prompt: str = "main"
     extra: dict = field(default_factory=dict)
 
     @classmethod
@@ -148,18 +152,21 @@ class Config:
         cfg = cls()
         try:
             data = json.loads(CONFIG_FILE.read_text())
-            for k in ("model_id", "effort", "auto_approve", "show_reasoning", "theme"):
+            for k in ("model_id", "effort", "auto_approve", "show_reasoning",
+                      "theme", "prompt"):
                 if k in data:
                     setattr(cfg, k, data[k])
             cfg.extra = {k: v for k, v in data.items()
                          if k not in ("model_id", "effort", "auto_approve",
-                                      "show_reasoning", "theme")}
+                                      "show_reasoning", "theme", "prompt")}
         except (OSError, ValueError):
             pass
         if model_by_id(cfg.model_id) is None:
             cfg.model_id = DEFAULT_MODEL_ID
         if effort_by_key(cfg.effort) is None:
             cfg.effort = DEFAULT_EFFORT
+        if not isinstance(cfg.prompt, str) or not cfg.prompt:
+            cfg.prompt = "main"
         return cfg
 
     def save(self) -> None:
@@ -170,6 +177,7 @@ class Config:
             "auto_approve": self.auto_approve,
             "show_reasoning": self.show_reasoning,
             "theme": self.theme,
+            "prompt": self.prompt,
         }
         data.update(self.extra)
         CONFIG_FILE.write_text(json.dumps(data, indent=2))

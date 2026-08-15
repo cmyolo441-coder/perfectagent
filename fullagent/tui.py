@@ -213,6 +213,8 @@ SLASH_COMMANDS = [
     ("/scout", "fan out read-only scouts — /scout q1 | q2 | q3"),
     ("/team", "parallel worker team (up to 8) — /team task1 | task2 | …"),
     ("/auto", "autopilot self-routing — /auto [on|off|status]"),
+    ("/prompt", "system prompt — /prompt [main|master|list]"),
+    ("/mastermind", "prompt coherence ledger — sealed prompts, gate, lineage"),
     ("/help", "commands and key bindings"),
     ("/clear", "clear the screen"),
     ("/new", "fresh conversation"),
@@ -906,9 +908,14 @@ class UI:
             self._cmd_team(arg)
         elif cmd == "/auto":
             self._cmd_auto(arg)
+        elif cmd == "/prompt":
+            self._cmd_prompt(arg)
+        elif cmd == "/mastermind":
+            self.print_info(self.agent.mastermind.format_status(), C["pink"])
         elif cmd == "/about":
-            self.print_info(f"{APP_NAME} v1.0 — advanced terminal AI agent",
-                            C["accent"])
+            from . import __version__
+            self.print_info(f"{APP_NAME} v{__version__} — advanced terminal "
+                            "AI agent", C["accent"])
             self.print_info("  python + prompt_toolkit + rich · "
                             "OpenCode Zen & TokenRouter providers", C["dim"])
         else:
@@ -1429,6 +1436,34 @@ class UI:
                             C["cyan"])
         else:
             self.print_error("usage: /auto [on|off|status]")
+
+    def _cmd_prompt(self, arg: str) -> None:
+        """Select which system prompt the model gets (systemprompt.py is
+        the single source). 'main' is the compact prompt; 'master' is the
+        extended 130k+ specification prompt."""
+        from . import systemprompt
+        sub = arg.strip().lower()
+        if sub in ("", "list", "status"):
+            current = self.cfg.prompt
+            lines = [f"system prompt: {current}  (source: systemprompt.py)"]
+            for name in systemprompt.names():
+                mark = "●" if name == current else "○"
+                size = len(systemprompt.get(name))
+                lines.append(f"  {mark} {name:<8} {size:>8,} chars")
+            lines.append("switch: /prompt main · /prompt master")
+            self.print_info("\n".join(lines), C["cyan"])
+            return
+        if sub not in systemprompt.PROMPTS:
+            self.print_error(f"unknown prompt {sub!r} — available: "
+                             + ", ".join(systemprompt.names()))
+            return
+        self.cfg.prompt = sub
+        self.cfg.save()
+        # re-seat the live conversation's system prompt through the gate
+        self.agent._reseat_system_prompt()
+        size = len(self.agent._base_prompt())
+        self.print_info(f"✓ system prompt → {sub} ({size:,} chars) — "
+                        "applies from the next model call", C["green"])
 
     # -- turn execution (worker thread) ---------------------------------------------------------
 

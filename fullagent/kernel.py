@@ -156,6 +156,9 @@ class State:
     calibration: list[dict] = field(default_factory=list)
     # §13.4 — loop/thrash detector trips
     loop_alerts: list[dict] = field(default_factory=list)
+    # Mastermind — prompt coherence ledger
+    prompt_sealed: list[dict] = field(default_factory=list)
+    prompt_dispatches: list[dict] = field(default_factory=list)
     head_seq: int = -1
     branch: str = "main"
 
@@ -449,6 +452,10 @@ def fold(log: EventLog, branch: str | None = None,
             st.swarm_reports.append(d)
         elif t == "team.report":
             st.team_reports.append(d)
+        elif t == "prompt.sealed":
+            st.prompt_sealed.append(d)
+        elif t == "prompt.dispatch":
+            st.prompt_dispatches.append(d)
         elif t == "judge.verdict":
             st.verdicts.append(d)
         elif t == "snapshot.taken":

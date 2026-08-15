@@ -52,7 +52,8 @@ def build_payload(model: Model, effort: Effort, messages: list[dict],
         "temperature": effort.temperature,
     }
     if effort.max_tokens:
-        payload["max_tokens"] = effort.max_tokens
+        payload["max_tokens"] = _clamp_max_tokens(model.provider,
+                                                  effort.max_tokens)
     if tools and model.supports_tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
@@ -60,6 +61,21 @@ def build_payload(model: Model, effort: Effort, messages: list[dict],
         payload["reasoning_effort"] = _normalize_reasoning_effort(
             model.provider, effort.reasoning_effort)
     return payload
+
+
+# FullAgent asks for 200k output tokens everywhere, but each backend has its
+# own hard ceiling. Clamp at send time so the request is never rejected for
+# an oversized max_tokens; providers without a known cap pass through.
+_MAX_TOKENS_CAP: dict[str, int] = {
+    "agnes": 65_536,   # sglang backend: "max_tokens exceeds the limit of 65536"
+}
+
+
+def _clamp_max_tokens(provider_key: str, value: int) -> int:
+    cap = _MAX_TOKENS_CAP.get(provider_key)
+    if cap is None:
+        return value
+    return min(value, cap)
 
 
 # Providers accept different reasoning-effort vocabularies. Map our internal

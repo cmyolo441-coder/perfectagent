@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import config
+from . import systemprompt
 from .autopilot import AutoPilot, RouteDecision
 from .cassette import Cassette
 from .client import APIError, TurnCancelled, chat_blocking, chat_stream
@@ -39,6 +40,7 @@ from .forge import Forge
 from .goal import GoalContract
 from .judge import Judge
 from .kernel import EventLog, fold
+from .mastermind import Mastermind
 from .memory import Hippocampus
 from .nexus import Nexus
 from .oracle import Oracle
@@ -47,22 +49,8 @@ from .swarm import Swarm
 from .team import Team
 from .tools import RISK_CONFIRM, Tool, build_registry, parse_tool_arguments
 
-SYSTEM_PROMPT = """You are FullAgent, an elite terminal AI agent running inside the user's shell.
-
-You accomplish tasks end to end using your tools:
-- read_file / write_file / edit_file / list_dir / file_info / create_directory / copy_path / move_path / delete_path for file work
-- search_files (regex over contents) and glob_files to find things
-- run_command to execute shell commands (builds, tests, git, installs, running programs)
-- code_symbols / code_impact to understand code semantically (call graph, blast radius)
-- web_fetch and web_search for information from the internet
-
-Working style:
-- Be decisive: inspect before editing, make the change, then verify it (run the code/tests) instead of guessing.
-- Prefer several small correct steps over one big guess. Keep going until the task is genuinely done.
-- edit_file requires an exact, unique old_string — read the file first if unsure.
-- For risky or destructive operations, be careful and explain what you are doing.
-- Keep replies concise and factual; show results, not narration. Use markdown sparingly.
-- When the task is complete, summarize what was done and the outcome in a few lines."""
+# The system prompt lives in systemprompt.py — the single source of truth.
+# This module only ever reads it from there.
 
 # Autonomy ladder (§22): L0 observer … L5 autonomous
 AUTONOMY_LEVELS = {
@@ -119,20 +107,26 @@ class Agent:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.tools = build_registry()
-        self.messages: list[dict] = [
-            {"role": "system", "content": SYSTEM_PROMPT}]
         self.session_id = uuid.uuid4().hex[:8]
         self.turns: list[Turn] = []
 
         # Temporal kernel + the nine subsystems
         config.ensure_dirs()
         self.log = EventLog(config.EVENT_LOG_FILE, session=self.session_id)
+        # Mastermind: hash-sealed prompts + the single gate to the model.
+        # Built before messages so the very first system prompt is sealed
+        # and dispatched through the gate, not assembled by hand.
+        self.mastermind = Mastermind(self.log)
+        self.messages: list[dict] = []
+        self._reseat_system_prompt()
         self.store = SnapshotStore(config.APP_DIR / "store")
         self.memory = Hippocampus(self.log)
         self.judge = Judge(self.log)
         self.goal = GoalContract(self.log, judge=self.judge)
-        self.swarm = Swarm(self.log, self.provider, self.model, self.effort)
-        self.team = Team(self.log, self.provider, self.model, self.effort)
+        self.swarm = Swarm(self.log, self.provider, self.model, self.effort,
+                           mastermind=self.mastermind)
+        self.team = Team(self.log, self.provider, self.model, self.effort,
+                         mastermind=self.mastermind)
         self.autopilot = AutoPilot(self.log)
         self.nexus = Nexus()
         self.forge = Forge(self.log)
@@ -176,6 +170,25 @@ class Agent:
         assert e is not None
         return e
 
+    def _base_prompt(self) -> str:
+        """The system prompt for this session, served from the Mastermind
+        vault (hash-sealed copy of systemprompt.py). Falls back to the
+        module source if the vault somehow lacks the name, so the model is
+        never promptless."""
+        name = self.cfg.prompt
+        sealed = self.mastermind.vault.get(name)
+        return sealed if sealed is not None else systemprompt.get(name)
+
+    def _reseat_system_prompt(self,
+                              sections: dict[str, str] | None = None
+                              ) -> None:
+        """Route the conversation's system prompt through the Mastermind
+        gate — the single door to the model. Guarantees messages[0] carries
+        the sealed prompt, composes any live context sections beneath it,
+        and seals a prompt.dispatch lineage event."""
+        self.messages, _ = self.mastermind.gate.dispatch(
+            self.cfg.prompt, self.messages, sections=sections)
+
     def state(self):
         """Live projection of the event log (cost, goal, dead-ends, …)."""
         return fold(self.log)
@@ -183,7 +196,8 @@ class Agent:
     # -- conversation ------------------------------------------------------
 
     def reset(self) -> None:
-        self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        self.messages = []
+        self._reseat_system_prompt()
         self.turns = []
         self.session_id = uuid.uuid4().hex[:8]
         self.log.session = self.session_id
@@ -192,30 +206,34 @@ class Agent:
                                           "effort": self.cfg.effort},
                         actor="system")
 
-    def _system_content(self, route: RouteDecision | None = None) -> str:
-        """Base prompt + constitution + live goal contract + memory."""
-        parts = [SYSTEM_PROMPT]
+    def _context_sections(self,
+                          route: RouteDecision | None = None
+                          ) -> dict[str, str]:
+        """Live context sections composed beneath the sealed prompt by the
+        Mastermind gate (constitution, goal, web, memory). The framing is
+        the composer's job — bodies here are plain content only."""
+        sections: dict[str, str] = {}
         constitution = self.oracle.read_constitution()
         if constitution.strip():
-            parts.append("\nCONSTITUTION (standing rules, always apply):\n"
-                         + constitution.strip())
+            sections["constitution"] = constitution.strip()
         goal = self.goal.status()
         if goal.active:
-            parts.append("\nACTIVE GOAL CONTRACT:\n" + self.goal.format() +
-                         "\nEvery action must serve an open clause. When a "
-                         "clause's predicate genuinely passes, say "
-                         "'PROVEN: <clause id>' — the kernel verifies it, "
-                         "never trust self-declared success.")
+            sections["goal"] = (self.goal.format() +
+                                "\nEvery action must serve an open clause. "
+                                "When a clause's predicate genuinely "
+                                "passes, say 'PROVEN: <clause id>' — the "
+                                "kernel verifies it, never trust "
+                                "self-declared success.")
         if route is not None and route.use_web:
-            parts.append("\nREAL-TIME WEB MODE: this request needs live, "
-                         "up-to-the-minute data. Use web_search (and "
-                         "web_fetch for details) to get CURRENT facts — "
-                         "never answer from stale knowledge. Quote the "
-                         "retrieval time and sources.")
+            sections["web"] = ("This request needs live, up-to-the-minute "
+                               "data. Use web_search (and web_fetch for "
+                               "details) to get CURRENT facts — never "
+                               "answer from stale knowledge. Quote the "
+                               "retrieval time and sources.")
         mem = self.memory.context_block()
         if mem:
-            parts.append("\nMEMORY (from prior work):\n" + mem)
-        return "\n".join(parts)
+            sections["memory"] = mem
+        return sections
 
     def _tool_schemas(self) -> list[dict] | None:
         if not self.model.supports_tools:
@@ -250,9 +268,11 @@ class Agent:
         if route.use_team:
             self._autopilot_team(route, on_status)
 
-        # refresh dynamic system context (constitution + goal + memory)
-        self.messages[0] = {"role": "system",
-                            "content": self._system_content(route)}
+        # refresh the system document through the Mastermind gate — the
+        # sealed prompt is guaranteed at position 0, live context sections
+        # (constitution + goal + web + memory) are composed beneath it.
+        self._reseat_system_prompt(
+            sections=self._context_sections(route))
         self.messages.append({"role": "user", "content": user_text})
         user_ev = self.log.append("user.message",
                                   {"text": user_text,
@@ -701,7 +721,8 @@ class Agent:
             self.store.materialise(snap.data.get("tree", ""))
         new_head = self.log.rewind(seq)
         st = fold(self.log, upto_seq=new_head)
-        self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        self.messages = []
+        self._reseat_system_prompt()
         self.messages.extend(st.messages)
         return new_head, len(st.messages)
 

@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import systemprompt
 from .client import APIError, chat_blocking
 from .config import Effort, Model, Provider
 from .kernel import EventLog, fold
@@ -29,70 +30,49 @@ from .tools import Tool, build_registry, parse_tool_arguments
 MAX_WORKERS = 8            # hard ceiling on parallel workers
 MAX_WORKER_STEPS = 14      # tool-loop budget per worker
 MAX_SUMMARY_CHARS = 1800
-RATE_LIMIT_RETRIES = 5     # retries when the provider rate-limits a worker
+RATE_LIMIT_RETRIES = 6     # retries when the provider rate-limits a worker
 RATE_LIMIT_BASE_WAIT = 2.0  # seconds; doubles each retry (+ jitter)
+STAGGER_SECONDS = 0.6      # launch wave: worker i starts ~i*0.6s in, so 8
+                           # workers never hit the API in one instant burst
 
 # One global write lock: writes serialise across ALL workers (§16.1).
 _WRITE_LOCK = threading.Lock()
 
 # Role -> (tool whitelist, brief). Reads fan out freely; only builder roles
 # get write tools, and those go through _WRITE_LOCK.
+# Role -> (tool whitelist, write permission). The role BRIEFS — the words
+# the model actually reads — live in systemprompt.ROLE_BRIEFS, so every
+# prompt is defined in one file.
 ROLES: dict[str, dict] = {
     "researcher": {
         "tools": ("read_file", "list_dir", "file_info", "search_files",
                   "glob_files", "web_search", "web_fetch"),
-        "brief": ("You are a RESEARCH specialist. Gather facts from the "
-                  "web and the codebase. Cite sources (URLs, file:line). "
-                  "Never modify anything."),
         "writes": False,
     },
     "coder": {
         "tools": ("read_file", "list_dir", "file_info", "search_files",
                   "glob_files", "write_file", "edit_file",
                   "create_directory"),
-        "brief": ("You are a senior SOFTWARE ENGINEER. Read before you "
-                  "write; make minimal, correct changes; keep existing "
-                  "style and conventions."),
         "writes": True,
     },
     "tester": {
         "tools": ("read_file", "list_dir", "file_info", "search_files",
                   "glob_files", "run_command"),
-        "brief": ("You are a QA / TEST engineer. Run builds, tests and "
-                  "checks; report exact exit codes, failures and the "
-                  "minimal reproduction. Never modify source files."),
         "writes": False,
     },
     "reviewer": {
         "tools": ("read_file", "list_dir", "file_info", "search_files",
                   "glob_files"),
-        "brief": ("You are a CODE REVIEWER. Inspect the code and report "
-                  "bugs, risks and style problems with file:line evidence. "
-                  "Never modify anything."),
         "writes": False,
     },
     "analyst": {
         "tools": ("read_file", "list_dir", "file_info", "search_files",
                   "glob_files", "web_search", "web_fetch", "run_command"),
-        "brief": ("You are a DATA / SYSTEMS analyst. Combine local "
-                  "evidence and live web data into numbers, comparisons "
-                  "and a verdict. Never modify anything."),
         "writes": False,
     },
 }
 DEFAULT_ROLE = "coder"
-
-WORKER_SYSTEM_PROMPT = """You are {role_brief}
-
-You are one of up to {max_workers} workers running IN PARALLEL on the same machine. Rules:
-- Complete ONLY your assigned task; other workers handle the rest.
-- Work fast and decisively: inspect, act, verify, finish.
-- Use your tools to gather real evidence before claiming anything.
-- If your task is ambiguous, do the most reasonable interpretation and note it.
-
-When done, reply with a final report in EXACTLY this form:
-STATUS: DONE | BLOCKED
-SUMMARY: <2-5 factual lines: what you did, what you found, exact paths/numbers>"""
+# The worker system prompt template lives in systemprompt.py — single source.
 
 
 @dataclass
@@ -142,11 +122,15 @@ class Team:
     """Parallel fan-out of worker sub-agents over a shared EventLog."""
 
     def __init__(self, log: EventLog, provider: Provider, model: Model,
-                 effort: Effort) -> None:
+                 effort: Effort, mastermind=None) -> None:
         self.log = log
         self.provider = provider
         self.model = model
         self.effort = effort
+        # Mastermind gate: when attached, every worker prompt is served
+        # hash-sealed through the single door to the model. Standalone
+        # (self-tests) falls back to the module source.
+        self.mastermind = mastermind
         registry = build_registry()
         self._toolsets: dict[str, dict[str, Tool]] = {}
         for role, spec in ROLES.items():
@@ -170,9 +154,10 @@ class Team:
         if not tasks:
             return []
 
-        def _safe(task: dict) -> WorkerReport:
+        def _safe(index: int, task: dict) -> WorkerReport:
             try:
-                return self._run_one(task, context, timeout, read_only)
+                return self._run_one(task, context, timeout, read_only,
+                                     stagger_index=index)
             except Exception as e:  # one failing worker never kills the team
                 return WorkerReport(task=task.get("task", ""),
                                     role=task.get("role", DEFAULT_ROLE),
@@ -180,7 +165,8 @@ class Team:
 
         workers = min(len(tasks), MAX_WORKERS)
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            reports = list(ex.map(_safe, tasks))
+            reports = list(ex.map(lambda it: _safe(it[0], it[1]),
+                                  enumerate(tasks)))
 
         # Writes serialise: reports are sealed one at a time, input order.
         for r in reports:
@@ -235,7 +221,8 @@ class Team:
         raise last_err  # type: ignore[misc]
 
     def _run_one(self, task: dict, context: str,
-                 timeout: float, read_only: bool = False) -> WorkerReport:
+                 timeout: float, read_only: bool = False,
+                 stagger_index: int = 0) -> WorkerReport:
         role = task.get("role") or DEFAULT_ROLE
         if role not in ROLES:
             role = DEFAULT_ROLE
@@ -248,12 +235,23 @@ class Team:
         schemas = ([t.openai_schema() for t in tools.values()]
                    if self.model.supports_tools else None)
 
-        system = WORKER_SYSTEM_PROMPT.format(
-            role_brief=spec["brief"], max_workers=MAX_WORKERS)
+        # Launch wave: worker i waits ~i*STAGGER before its first call so
+        # 8 workers spread across ~4s instead of one instant burst. This
+        # keeps free-tier APIs from rate-limiting the whole team at t=0.
+        if stagger_index > 0:
+            time.sleep(stagger_index * STAGGER_SECONDS
+                       + random.uniform(0, 0.3))
+
         user = (f"Shared context:\n{context}\n\nYOUR TASK: {task['task']}"
                 if context else f"YOUR TASK: {task['task']}")
-        messages = [{"role": "system", "content": system},
-                    {"role": "user", "content": user}]
+        messages: list[dict] = []
+        if self.mastermind is not None:
+            messages, _ = self.mastermind.gate.dispatch(
+                f"worker:{role}", messages)
+        else:
+            systemprompt.with_system(
+                messages, systemprompt.worker(role, MAX_WORKERS))
+        messages.append({"role": "user", "content": user})
 
         t0 = time.monotonic()
         report = WorkerReport(task=task["task"], role=role)
@@ -312,8 +310,8 @@ class Team:
                 report.tokens_out += int(result.usage.get(
                     "completion_tokens", 0) or 0)
 
-        report.elapsed_ms = int((time.monotonic() - t0) * 1000)
         content = (result.content or "") if result else ""
+        report.elapsed_ms = int((time.monotonic() - t0) * 1000)
         status, summary = _parse_final(content)
         report.status = status
         report.summary = (summary[:MAX_SUMMARY_CHARS] + " …[truncated]"
@@ -357,8 +355,8 @@ if __name__ == "__main__":
 
             # offline stand-in: sleeps so serial execution would take >= 0.9s
             def fake_run_one(task: dict, context: str,
-                             timeout: float,
-                             read_only: bool = False) -> WorkerReport:
+                             timeout: float, read_only: bool = False,
+                             stagger_index: int = 0) -> WorkerReport:
                 time.sleep(0.3)
                 return WorkerReport(task=task["task"],
                                     role=task.get("role", DEFAULT_ROLE),
@@ -386,7 +384,8 @@ if __name__ == "__main__":
 
             # a raising worker yields status=error, not an exception
             def boom(task: dict, context: str,
-                     timeout: float, read_only: bool = False) -> WorkerReport:
+                     timeout: float, read_only: bool = False,
+                     stagger_index: int = 0) -> WorkerReport:
                 raise RuntimeError("kaboom")
 
             team._run_one = boom  # type: ignore[method-assign]
