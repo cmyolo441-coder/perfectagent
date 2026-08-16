@@ -16,6 +16,20 @@ from .config import Effort, Model, Provider
 RETRY_STATUSES = {408, 429, 500, 502, 503, 504}
 MAX_RETRIES = 3
 
+# TokenRouter's free tier admits a request only when its prompt cache is
+# warm; a cold or overloaded one is rejected with "cache-only admission
+# rejected". This is transient — backing off and retrying succeeds once the
+# cache warms up (the CLIs that "just work" retry implicitly). We give cold
+# rejections their own, longer retry budget, separate from MAX_RETRIES.
+_COLD_ADMISSION_RE = re.compile(
+    r"cache-only admission|cold or overloaded", re.I)
+MAX_COLD_RETRIES = 4
+COLD_RETRY_WAIT = 8.0  # seconds; multiplied by the retry number
+
+
+def is_cold_admission(message: str) -> bool:
+    return bool(_COLD_ADMISSION_RE.search(message or ""))
+
 
 class APIError(Exception):
     def __init__(self, message: str, status: int | None = None):
@@ -567,9 +581,12 @@ def _heal_overflow(model: Model, effort: Effort, error: APIError,
 def _chat_stream_with_retries(url: str, headers: dict, payload: dict,
                                on_token, on_reasoning, on_tool_start,
                                should_cancel, timeout: float) -> StreamResult:
-    """The plain retry loop (rate limits, timeouts, connection errors)."""
+    """The plain retry loop (rate limits, timeouts, connection errors, and
+    TokenRouter cold-admission rejections)."""
     last_error: Exception | None = None
-    for attempt in range(MAX_RETRIES):
+    cold_retries = 0
+    attempt = 0
+    while attempt < MAX_RETRIES:
         try:
             return _chat_stream_once(url, headers, payload,
                                      on_token, on_reasoning, on_tool_start,
@@ -578,21 +595,36 @@ def _chat_stream_with_retries(url: str, headers: dict, payload: dict,
             raise
         except APIError as e:
             last_error = e
+            # Cold-admission rejection: not an HTTP failure and not a hard
+            # error — the prompt cache just isn't warm yet. Give it a
+            # dedicated backoff budget so a session-opening request on a
+            # free-tier endpoint survives until admission opens up.
+            if is_cold_admission(str(e)):
+                if should_cancel is not None and should_cancel():
+                    raise TurnCancelled()
+                cold_retries += 1
+                if cold_retries <= MAX_COLD_RETRIES:
+                    time.sleep(COLD_RETRY_WAIT * cold_retries)
+                    continue
+                raise
             if e.status in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
                 wait = 2.0 * (attempt + 1)
                 time.sleep(wait)
+                attempt += 1
                 continue
             raise
         except requests.exceptions.Timeout as e:
             last_error = e
             if attempt < MAX_RETRIES - 1:
                 time.sleep(2.0)
+                attempt += 1
                 continue
             raise APIError(f"request timed out after {timeout}s") from e
         except requests.exceptions.ConnectionError as e:
             last_error = e
             if attempt < MAX_RETRIES - 1:
                 time.sleep(2.0)
+                attempt += 1
                 continue
             raise APIError(f"connection failed: {e}") from e
     raise APIError(str(last_error))
@@ -678,6 +710,26 @@ def _chat_stream_once(url: str, headers: dict, payload: dict,
     return result
 
 
+def _post_with_cold_retries(url: str, headers: dict, payload: dict,
+                            timeout: float) -> requests.Response:
+    """POST with a dedicated budget for TokenRouter cold-admission
+    rejections ("cache-only admission rejected"). Returns a 200 response or
+    raises; non-cold errors raise immediately."""
+    last: APIError | None = None
+    for cold in range(MAX_COLD_RETRIES + 1):
+        resp = requests.post(url, headers=headers, json=payload,
+                             timeout=timeout)
+        if resp.status_code == 200:
+            return resp
+        err = APIError(_extract_error_message(resp.text),
+                       status=resp.status_code)
+        if not is_cold_admission(str(err)) or cold >= MAX_COLD_RETRIES:
+            raise err
+        last = err
+        time.sleep(COLD_RETRY_WAIT * (cold + 1))
+    raise last
+
+
 def chat_blocking(provider: Provider, model: Model, effort: Effort,
                   messages: list[dict], tools: list[dict] | None,
                   on_overflow: Callable[[], bool] | None = None,
@@ -709,11 +761,9 @@ def chat_blocking(provider: Provider, model: Model, effort: Effort,
                 shrinks_used += 1
                 continue
             raise
-        resp = requests.post(url, headers=headers, json=payload,
-                             timeout=timeout)
-        if resp.status_code != 200:
-            err = APIError(_extract_error_message(resp.text),
-                           status=resp.status_code)
+        try:
+            resp = _post_with_cold_retries(url, headers, payload, timeout)
+        except APIError as err:
             healed = _heal_overflow(model, current_effort, err,
                                     overflow_attempt, sent_chars)
             if healed is not None:
@@ -723,7 +773,7 @@ def chat_blocking(provider: Provider, model: Model, effort: Effort,
                     and shrinks_used < OVERFLOW_SHRINKS and on_overflow()):
                 shrinks_used += 1
                 continue
-            raise err
+            raise
         data = resp.json()
         result = StreamResult(model=data.get("model", model.id),
                               usage=data.get("usage"))
