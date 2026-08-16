@@ -52,8 +52,10 @@ def build_payload(model: Model, effort: Effort, messages: list[dict],
         "temperature": effort.temperature,
     }
     if effort.max_tokens:
-        payload["max_tokens"] = _clamp_max_tokens(model.provider,
-                                                  effort.max_tokens)
+        # The request must fit in the window: input + max_tokens <= window,
+        # otherwise the backend rejects it wholesale.
+        windowed = _window_max_tokens(model, effort, messages, tools)
+        payload["max_tokens"] = _clamp_max_tokens(model.provider, windowed)
     if tools and model.supports_tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
@@ -61,6 +63,42 @@ def build_payload(model: Model, effort: Effort, messages: list[dict],
         payload["reasoning_effort"] = _normalize_reasoning_effort(
             model.provider, effort.reasoning_effort)
     return payload
+
+
+def estimate_tokens(obj: Any) -> int:
+    """Rough but deterministic token estimate (~4 chars/token) for any
+    JSON-serialisable object."""
+    try:
+        payload = json.dumps(obj, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        payload = str(obj)
+    return max(1, len(payload) // 4)
+
+
+CONTEXT_MARGIN = 4_096    # safety headroom between input and the window
+
+
+def _window_max_tokens(model: Model, effort: Effort, messages: list[dict],
+                       tools: list[dict] | None) -> int:
+    """Clamp the requested max_tokens so that input + max_tokens fits in
+    the model's context window. Backends reject the whole request when
+    the sum exceeds the window (e.g. 'maximum context length of 262144
+    tokens'). If the input alone overflows the window, raise a clear,
+    recoverable error instead of sending a doomed request."""
+    requested = effort.max_tokens or 0
+    if not requested:
+        return 0
+    input_tokens = estimate_tokens(messages)
+    if tools and model.supports_tools:
+        input_tokens += estimate_tokens(tools)
+    if input_tokens + CONTEXT_MARGIN + 2_048 > model.context_window:
+        raise APIError(
+            f"conversation is too large for {model.label} "
+            f"(~{input_tokens:,} input tokens vs {model.context_window:,} "
+            f"context window) — start a new session (/new), rewind "
+            f"(/rewind), or switch to a larger-context model (Ctrl+T)")
+    headroom = model.context_window - input_tokens - CONTEXT_MARGIN
+    return min(requested, headroom)
 
 
 # FullAgent asks for 200k output tokens everywhere, but each backend has its

@@ -33,7 +33,8 @@ from . import config
 from . import systemprompt
 from .autopilot import AutoPilot, RouteDecision
 from .cassette import Cassette
-from .client import APIError, TurnCancelled, chat_blocking, chat_stream
+from .client import (APIError, TurnCancelled, chat_blocking, chat_stream,
+                     estimate_tokens)
 from .config import Config, Effort, Model, Provider, PROVIDERS, model_by_id
 from .cortex import Budget, BudgetGovernor, LoopDetector
 from .council import Council
@@ -342,6 +343,12 @@ class Agent:
                                  f"or stop."
                     break
                 on_status("thinking")
+                # keep the context under the window — compact stale turns
+                # before asking the model (I9: input budget governor)
+                try:
+                    self._maybe_compact()
+                except Exception:
+                    pass
                 result = self._complete(on_token, on_reasoning, on_status,
                                         should_cancel)
 
@@ -417,6 +424,71 @@ class Agent:
         turn.duration = time.time() - started
         self.turns.append(turn)
         return turn
+
+    def _fit_budget(self) -> int:
+        """The input token budget we aim to stay under — half the window
+        minus the reserve, so the requested max_tokens always fits."""
+        return self.model.context_window // 2 - 4_096
+
+    def _maybe_compact(self) -> None:
+        """Keep the conversation under the model's context window.
+
+        Two passes: first truncate stale tool outputs to summaries, then
+        drop the oldest user→(assistant+tool results) turns as whole units
+        so tool_call / tool-response pairing is never broken. Only the
+        model-visible context shrinks — the event log keeps everything."""
+        schemas = self._tool_schemas()
+        if estimate_tokens(self.messages) + (estimate_tokens(schemas)
+                                             if schemas else 0) \
+                <= self._fit_budget():
+            return
+        dropped = self._compact_old_tools()
+        budget = self._fit_budget()
+        while estimate_tokens(self.messages) > budget and len(self.messages) > 2:
+            if not self._drop_oldest_turn():
+                break
+            dropped += 1
+        if dropped:
+            self.log.append("context.compacted",
+                            {"messages": len(self.messages),
+                             "units": dropped,
+                             "est_tokens": estimate_tokens(self.messages)},
+                            actor="kernel")
+
+    def _compact_old_tools(self, keep: int = 2) -> int:
+        """Truncate stale tool results to summaries, keeping the newest
+        `keep` tool responses verbatim."""
+        tool_idx = [i for i, m in enumerate(self.messages)
+                    if m.get("role") == "tool"]
+        stale = tool_idx if keep <= 0 else tool_idx[:-keep]
+        n = 0
+        for i in stale:
+            content = str(self.messages[i].get("content") or "")
+            if len(content) > 500:
+                self.messages[i]["content"] = (
+                    content[:350]
+                    + f"\n[… truncated by the kernel — {len(content):,} "
+                      f"chars originally; re-read the file if you need it]")
+                n += 1
+        return n
+
+    def _drop_oldest_turn(self) -> bool:
+        """Remove the oldest user message plus everything up to the next
+        user message (the assistant reply and its tool results)."""
+        msgs = self.messages
+        if msgs and msgs[0].get("role") == "system":
+            start = 1
+        else:
+            start = 0
+        end = None
+        for j in range(start + 1, len(msgs)):
+            if msgs[j].get("role") == "user":
+                end = j
+                break
+        if end is None or end <= start:
+            return False
+        del msgs[start:end]
+        return True
 
     def _goal_tick(self) -> None:
         """§38.3 kernel loop: measure distance, re-aim focus. Pure Python

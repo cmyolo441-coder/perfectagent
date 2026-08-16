@@ -19,6 +19,9 @@ MAX_TOOL_ITERATIONS = 40
 MAX_TOOL_OUTPUT_CHARS = 24_000
 # One output ceiling for every effort level: 200k tokens.
 MAX_TOKENS = 200_000
+# Backends reject a request when input + max_tokens exceeds the model's
+# context window. Every request's max_tokens is clamped to fit (client.py).
+DEFAULT_CONTEXT_WINDOW = 262_144
 
 
 @dataclass(frozen=True)
@@ -39,6 +42,9 @@ class Model:
     tag_color: str = "grey62"
     supports_tools: bool = True
     supports_reasoning: bool = False
+    # Total context window (input + output tokens). Used to clamp max_tokens
+    # at send time so a request is never rejected for exceeding the window.
+    context_window: int = DEFAULT_CONTEXT_WINDOW
 
 
 PROVIDERS: dict[str, Provider] = {
