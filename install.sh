@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO="cmyolo441-coder/perfectagent"
-VERSION="v2.2"
+VERSION="v2.3"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 NAME="fullagent"
 

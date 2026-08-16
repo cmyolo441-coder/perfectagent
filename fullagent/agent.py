@@ -34,7 +34,7 @@ from . import systemprompt
 from .autopilot import AutoPilot, RouteDecision
 from .cassette import Cassette
 from .client import (APIError, TurnCancelled, chat_blocking, chat_stream,
-                     estimate_tokens)
+                     estimate_tokens, is_context_overflow)
 from .config import Config, Effort, Model, Provider, PROVIDERS, model_by_id
 from .cortex import Budget, BudgetGovernor, LoopDetector
 from .council import Council
@@ -325,6 +325,12 @@ class Agent:
                         for tn in self.turns[-2:] for t in tn.tools]
         self.speculator.speculate(user_text, recent_tools)
 
+        # Guard: a single giant paste (a whole file, a huge log) must never
+        # blow the context window by itself — cap it so the turn can still
+        # run. The full text stays in the event log; the model sees a
+        # truncated copy with instructions to re-read from disk if needed.
+        user_text = self._cap_user_message(user_text)
+
         self.messages.append({"role": "user", "content": user_text})
         user_ev = self.log.append("user.message",
                                   {"text": user_text,
@@ -426,34 +432,130 @@ class Agent:
         return turn
 
     def _fit_budget(self) -> int:
-        """The input token budget we aim to stay under — half the window
-        minus the reserve, so the requested max_tokens always fits."""
-        return self.model.context_window // 2 - 4_096
+        """The input token budget we aim to stay under.
+
+        Mirrors the client's clamp math (client._window_max_tokens) so the
+        two never disagree: the budget is the largest input size that still
+        leaves room for the margin and a minimum completion. Staying under
+        this guarantees the request fits no matter how long the session has
+        been running."""
+        window = self.model.context_window
+        # solve: input + (8192 + input/32) + 1024 <= window
+        return int((window - 9_216) * 32 / 33)
+
+    def _cap_user_message(self, text: str) -> str:
+        """Cap a single user message so it can never consume the whole
+        context window on its own (a giant paste of a file/log). The cap
+        is a quarter of the fit budget — plenty for any real instruction,
+        small enough that the rest of the conversation always fits."""
+        cap_chars = int(self._fit_budget() * 3.2 // 4)  # budget tokens -> chars
+        if len(text) <= cap_chars:
+            return text
+        head = text[: cap_chars // 2]
+        tail = text[-cap_chars // 4:]
+        self.log.append("user.message.capped",
+                        {"chars": len(text), "kept": len(head) + len(tail)},
+                        actor="kernel")
+        return (head
+                + f"\n\n[… the kernel truncated this message — {len(text):,} "
+                  f"chars originally. If you need the full text, it is on "
+                  f"disk; use read_file/search_files instead of relying on "
+                  f"this paste.]\n\n"
+                + tail)
 
     def _maybe_compact(self) -> None:
         """Keep the conversation under the model's context window.
 
-        Two passes: first truncate stale tool outputs to summaries, then
-        drop the oldest user→(assistant+tool results) turns as whole units
-        so tool_call / tool-response pairing is never broken. Only the
-        model-visible context shrinks — the event log keeps everything."""
+        Three escalating passes, run only when needed:
+          1. truncate stale tool outputs to summaries,
+          2. drop the oldest user→(assistant+tool results) turns as whole
+             units so tool_call / tool-response pairing is never broken,
+          3. last resort — truncate EVERY tool output and trim the oldest
+             assistant messages.
+        Only the model-visible context shrinks — the event log keeps
+        everything, so nothing is ever lost."""
         schemas = self._tool_schemas()
-        if estimate_tokens(self.messages) + (estimate_tokens(schemas)
-                                             if schemas else 0) \
-                <= self._fit_budget():
+        schema_tokens = (estimate_tokens(schemas, self.model.id)
+                         if schemas else 0)
+        budget = self._fit_budget()
+        if (estimate_tokens(self.messages, self.model.id)
+                + schema_tokens <= budget):
             return
         dropped = self._compact_old_tools()
-        budget = self._fit_budget()
-        while estimate_tokens(self.messages) > budget and len(self.messages) > 2:
+        while (estimate_tokens(self.messages, self.model.id)
+               + schema_tokens > budget
+               and len(self.messages) > 2):
             if not self._drop_oldest_turn():
                 break
             dropped += 1
+        # last resort: still over budget — truncate all tool outputs and
+        # trim the oldest assistant messages until it fits
+        if (estimate_tokens(self.messages, self.model.id)
+                + schema_tokens > budget):
+            self._compact_old_tools(keep=0)
+            self._trim_oldest_assistant(budget - schema_tokens)
         if dropped:
             self.log.append("context.compacted",
                             {"messages": len(self.messages),
                              "units": dropped,
-                             "est_tokens": estimate_tokens(self.messages)},
+                             "est_tokens": estimate_tokens(self.messages,
+                                              self.model.id)},
                             actor="kernel")
+
+    def _trim_oldest_assistant(self, budget: int) -> None:
+        """Shrink the oldest assistant messages (they are the least
+        actionable once their tool results are gone) until under budget."""
+        while (estimate_tokens(self.messages, self.model.id) > budget
+               and len(self.messages) > 2):
+            # find the oldest assistant message with real content
+            target = None
+            for i, m in enumerate(self.messages):
+                if m.get("role") == "assistant" and m.get("content"):
+                    target = i
+                    break
+            if target is None:
+                return
+            content = str(self.messages[target]["content"])
+            if len(content) > 400:
+                self.messages[target]["content"] = (
+                    content[:300]
+                    + f"\n[… trimmed by the kernel — {len(content):,} "
+                      f"chars originally]")
+            else:
+                return
+
+    def _emergency_compact(self) -> None:
+        """Hard compaction used when a request was ALREADY rejected for
+        exceeding the context window. More aggressive than _maybe_compact:
+        truncates every tool output, then drops oldest turns until the
+        conversation is at most a third of the window — leaving a wide
+        margin so the retry is guaranteed to fit."""
+        self._compact_old_tools(keep=0)
+        target = self.model.context_window // 3
+        while (estimate_tokens(self.messages, self.model.id) > target
+               and len(self.messages) > 2):
+            if not self._drop_oldest_turn():
+                break
+        self._trim_oldest_assistant(target)
+        self.log.append("context.compacted",
+                        {"messages": len(self.messages),
+                         "est_tokens": estimate_tokens(self.messages,
+                                              self.model.id),
+                         "reason": "emergency — request rejected for "
+                                   "context length"},
+                        actor="kernel")
+
+    def _overflow_shrink(self) -> bool:
+        """Callback handed to the client (on_overflow): invoked when the
+        backend rejects a request because the INPUT itself no longer fits
+        the window. Shrinks the conversation and reports whether anything
+        actually shrank — the client retries only when it did. This is
+        what lets an arbitrarily long session on a huge project recover
+        instead of dying with a context-length error."""
+        before = estimate_tokens(self.messages, self.model.id)
+        self._emergency_compact()
+        after = estimate_tokens(self.messages, self.model.id)
+        return after < before
 
     def _compact_old_tools(self, keep: int = 2) -> int:
         """Truncate stale tool results to summaries, keeping the newest
@@ -603,21 +705,38 @@ class Agent:
                                  on_token=on_token,
                                  on_reasoning=on_reasoning,
                                  on_tool_start=lambda n: on_status(f"tool:{n}"),
-                                 should_cancel=should_cancel)
+                                 should_cancel=should_cancel,
+                                 on_overflow=self._overflow_shrink)
         except APIError as e:
             # some providers refuse streaming or tool params — degrade gracefully
             msg = str(e).lower()
-            if e.status == 400 and "tool" in msg and schemas:
+            if is_context_overflow(str(e)):
+                # last line of defence: the client already re-clamped,
+                # retried and shrunk, so compact one final time and try
+                # once more — a long session must never die with a
+                # context-length error.
+                on_status("compacting context")
+                self._emergency_compact()
+                result = chat_stream(self.provider, self.model, self.effort,
+                                     self.messages, schemas,
+                                     on_token=on_token,
+                                     on_reasoning=on_reasoning,
+                                     on_tool_start=lambda n: on_status(f"tool:{n}"),
+                                     should_cancel=should_cancel,
+                                     on_overflow=self._overflow_shrink)
+            elif e.status == 400 and "tool" in msg and schemas:
                 on_status("retrying (no tools)")
                 result = chat_stream(self.provider, self.model, self.effort,
                                      self.messages, None,
                                      on_token=on_token,
                                      on_reasoning=on_reasoning,
-                                     should_cancel=should_cancel)
+                                     should_cancel=should_cancel,
+                                     on_overflow=self._overflow_shrink)
             elif e.status == 400 and "stream" in msg:
                 on_status("retrying (non-stream)")
                 result = chat_blocking(self.provider, self.model,
-                                       self.effort, self.messages, schemas)
+                                       self.effort, self.messages, schemas,
+                                       on_overflow=self._overflow_shrink)
             else:
                 raise
         if self.cassette is not None and self.cassette.mode == "record":

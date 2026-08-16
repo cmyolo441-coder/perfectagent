@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from . import systemprompt
-from .client import APIError, chat_blocking
+from .client import APIError, chat_blocking, shrink_tool_outputs
 from .config import Effort, Model, Provider
 from .kernel import EventLog, fold
 from .tools import Tool, build_registry, parse_tool_arguments
@@ -122,12 +122,20 @@ class Swarm:
 
     def _chat(self, messages: list[dict], schemas: list[dict] | None,
               timeout: float):
-        """chat_blocking with rate-limit retry + exponential backoff."""
+        """chat_blocking with rate-limit retry + exponential backoff.
+
+        Also carries context-overflow protection: if the scout's own tool
+        loop bloats its context past the window, the oldest tool results
+        are truncated and the call retried — a scout never dies with a
+        context-length error."""
         last_err: Exception | None = None
         for attempt in range(RATE_LIMIT_RETRIES):
             try:
                 return chat_blocking(self.provider, self.model, self.effort,
-                                     messages, schemas, timeout=timeout)
+                                     messages, schemas,
+                                     on_overflow=lambda: shrink_tool_outputs(
+                                         messages),
+                                     timeout=timeout)
             except APIError as e:
                 msg = str(e).lower()
                 rate_limited = (e.status == 429 or "rate limit" in msg

@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import systemprompt
-from .client import APIError, chat_blocking
+from .client import APIError, chat_blocking, shrink_tool_outputs
 from .config import Effort, Model, Provider
 from .kernel import EventLog, fold
 from .tools import Tool, build_registry, parse_tool_arguments
@@ -202,12 +202,20 @@ class Team:
 
         8 parallel workers on a free-tier API will hit rate limits; a
         worker must wait and retry, not die. Backoff doubles each attempt
-        with jitter so the workers naturally de-synchronise."""
+        with jitter so the workers naturally de-synchronise.
+
+        Also carries context-overflow protection: if a worker's own tool
+        loop bloats its context past the window, the oldest tool results
+        are truncated and the call retried — a worker never dies with a
+        context-length error."""
         last_err: Exception | None = None
         for attempt in range(RATE_LIMIT_RETRIES):
             try:
                 return chat_blocking(self.provider, self.model, self.effort,
-                                     messages, schemas, timeout=timeout)
+                                     messages, schemas,
+                                     on_overflow=lambda: shrink_tool_outputs(
+                                         messages),
+                                     timeout=timeout)
             except APIError as e:
                 msg = str(e).lower()
                 rate_limited = (e.status == 429 or "rate limit" in msg

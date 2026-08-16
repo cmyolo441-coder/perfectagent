@@ -27,10 +27,10 @@ Linux x86_64 single-file binary, no Python needed:
 curl -fsSL https://raw.githubusercontent.com/cmyolo441-coder/perfectagent/main/install.sh | bash
 ```
 
-Or download the binary directly from the [v2.2 release](https://github.com/cmyolo441-coder/perfectagent/releases/tag/v2.2):
+Or download the binary directly from the [v2.3 release](https://github.com/cmyolo441-coder/perfectagent/releases/tag/v2.3):
 
 ```bash
-curl -fsSL -o fullagent https://github.com/cmyolo441-coder/perfectagent/releases/download/v2.2/fullagent-linux-x64
+curl -fsSL -o fullagent https://github.com/cmyolo441-coder/perfectagent/releases/download/v2.3/fullagent-linux-x64
 chmod +x fullagent && sudo mv fullagent /usr/local/bin/
 ```
 
