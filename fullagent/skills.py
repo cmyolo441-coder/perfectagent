@@ -185,7 +185,11 @@ class SkillForge:
         # all gates passed — persist + register
         skill.status = "registered"
         if self.skills_dir:
-            (self.skills_dir / f"{skill.name}.py").write_text(skill.source)
+            try:
+                self.skills_dir.mkdir(parents=True, exist_ok=True)
+                (self.skills_dir / f"{skill.name}.py").write_text(skill.source)
+            except OSError:
+                pass  # in-memory registration still works without disk
         self.registry[skill.name] = skill
         self.log.append("skill.validated",
                         {"name": skill.name, "tests": len(skill.tests)},

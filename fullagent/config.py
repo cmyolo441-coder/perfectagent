@@ -180,19 +180,28 @@ class Config:
         return cfg
 
     def save(self) -> None:
-        APP_DIR.mkdir(parents=True, exist_ok=True)
-        data = {
-            "model_id": self.model_id,
-            "effort": self.effort,
-            "auto_approve": self.auto_approve,
-            "show_reasoning": self.show_reasoning,
-            "theme": self.theme,
-            "prompt": self.prompt,
-        }
-        data.update(self.extra)
-        CONFIG_FILE.write_text(json.dumps(data, indent=2))
+        try:
+            ensure_dirs()
+            data = {
+                "model_id": self.model_id,
+                "effort": self.effort,
+                "auto_approve": self.auto_approve,
+                "show_reasoning": self.show_reasoning,
+                "theme": self.theme,
+                "prompt": self.prompt,
+            }
+            data.update(self.extra)
+            CONFIG_FILE.write_text(json.dumps(data, indent=2))
+        except OSError:
+            pass  # config persistence is a convenience, never a crash path
 
 
 def ensure_dirs() -> None:
-    APP_DIR.mkdir(parents=True, exist_ok=True)
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    """Create every directory the app writes into. Called at startup AND
+    before individual writes, so a deleted home dir heals itself."""
+    for d in (APP_DIR, SESSIONS_DIR, APP_DIR / "memory",
+              APP_DIR / "skills", APP_DIR / "store"):
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass

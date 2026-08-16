@@ -244,6 +244,16 @@ class EventLog:
                 self._heads[ev.branch] = ev.id
 
     def _persist(self, ev: Event) -> None:
+        try:
+            self._write_event(ev)
+        except FileNotFoundError:
+            # the home directory vanished mid-session (deleted externally,
+            # fresh mount, etc.) — recreate it and write again. The log
+            # must never take the app down over a missing directory.
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_event(ev)
+
+    def _write_event(self, ev: Event) -> None:
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(ev.to_dict(), ensure_ascii=False) + "\n")
             f.flush()

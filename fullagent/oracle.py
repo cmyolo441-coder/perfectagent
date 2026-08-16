@@ -130,7 +130,11 @@ class Oracle:
                  "_Machine-written by the Oracle. Human-editable._", ""]
         for f in facts:
             lines.append(f"- [{f.get('kind', 'project')}] {f.get('fact', '')}")
-        path.write_text("\n".join(lines) + "\n")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("\n".join(lines) + "\n")
+        except OSError:
+            return None
         return path
 
     # -- constitution (§24.4) ------------------------------------------------------

@@ -74,6 +74,35 @@ from .config import (
 )
 from .tools import Tool
 
+
+class SafeFileHistory(FileHistory):
+    """FileHistory that can never take the UI down.
+
+    prompt_toolkit calls store_string() from inside the event loop when the
+    user presses Enter; if the history file's directory is missing (fresh
+    install, home dir deleted mid-session, fresh mount) the base class
+    raises FileNotFoundError straight into the event loop. This subclass
+    recreates the directory and swallows any persistence error — input
+    history is a convenience, never a crash path."""
+
+    def load_history_strings(self):
+        try:
+            yield from super().load_history_strings()
+        except OSError:
+            return
+
+    def store_string(self, string: str) -> None:
+        try:
+            super().store_string(string)
+        except FileNotFoundError:
+            try:
+                Path(self.filename).parent.mkdir(parents=True, exist_ok=True)
+                super().store_string(string)
+            except OSError:
+                pass
+        except OSError:
+            pass
+
 # ---------------------------------------------------------------------------
 # Palette (dracula-flavoured)
 # ---------------------------------------------------------------------------
@@ -556,7 +585,7 @@ class UI:
             complete_while_typing=True,
             enable_history_search=True,
             auto_suggest=AutoSuggestFromHistory(),
-            history=FileHistory(str(config.HISTORY_FILE)),
+            history=SafeFileHistory(str(config.HISTORY_FILE)),
             accept_handler=self._accept_handler,
         )
 
