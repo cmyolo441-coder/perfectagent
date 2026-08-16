@@ -86,18 +86,25 @@ class PromptVault:
     def resolve(self, name: str) -> str:
         """Sealed text for `name`, sealing on demand from systemprompt.py.
 
-        Prompts registered at runtime (systemprompt.register) are sealed the
-        first time they are requested — the vault stays the only source a
-        model ever reads a prompt from, without needing a restart. If a
-        registered prompt's text changed since it was sealed, it is
-        re-sealed so the vault never serves a stale copy. A name that is
-        not in the registry cannot be sealed and raises."""
+        Already-sealed prompts (main, master, scout, worker:* — sealed at
+        vault init) are served straight from the cache. Prompts registered
+        at runtime (systemprompt.register) are sealed the first time they
+        are requested — the vault stays the only source a model ever reads
+        a prompt from, without needing a restart. If a registered prompt's
+        text changed since it was sealed, it is re-sealed so the vault
+        never serves a stale copy. A name that is neither sealed nor in
+        the registry cannot be sealed and raises."""
+        if name in self._sealed:
+            # re-sync with the registry in case the text changed upstream
+            text = systemprompt.PROMPTS.get(name)
+            if text is not None and text != self._sealed[name]:
+                self._seal(name, text)
+            return self._sealed[name]
         if name not in systemprompt.PROMPTS:
             raise KeyError(f"prompt {name!r} is not registered in "
                            "systemprompt.py — it cannot be sealed")
         text = systemprompt.PROMPTS[name]
-        if self._sealed.get(name) != text:
-            self._seal(name, text)
+        self._seal(name, text)
         return self._sealed[name]
 
     def fp(self, name: str) -> str | None:

@@ -173,6 +173,7 @@ class Agent:
         self._file_hashes: dict[str, list[str]] = {}  # oscillation history
         self._register_code_tools()
         self._register_v4_tools()
+        self._register_subagent_tools()
         self._register_persisted_skills()
 
         # cassette: record/replay model calls (FULLAGENT_CASSETTE=path,
@@ -1211,6 +1212,91 @@ class Agent:
                 "nargs": {"type": "integer"}},
                 "required": ["path", "function"]},
             fuzz_target, risk=RISK_CONFIRM)
+
+    # -- subagent tools (§16) ----------------------------------------------------
+
+    def _register_subagent_tools(self) -> None:
+        """Give the model REAL tools to spawn subagents on demand.
+
+        Without these the model can only ever work alone — the Team and
+        Swarm machinery existed but was unreachable from the model (only
+        AutoPilot heuristics could trigger it). Now the model can decide
+        for itself to fan work out to parallel subagents, exactly like a
+        lead engineer delegating to a team. Both tools run REAL
+        subagents: real model calls, real tool loops, in parallel
+        threads — and return compact structured reports."""
+        team = self.team
+        swarm = self.swarm
+
+        def spawn_subagents(tasks: list, read_only: bool = False) -> str:
+            """Run one worker subagent per task, IN PARALLEL (up to 8).
+
+            Each task is {"task": "...", "role": "coder|researcher|
+            tester|reviewer|analyst"}. Workers are real agents: they
+            read, search, run commands, and (builders) write files —
+            writes serialise through one global lock. Each worker
+            collapses into a compact report; nothing pollutes this
+            conversation."""
+            if not isinstance(tasks, list) or not tasks:
+                return ("ERROR: tasks must be a non-empty list of "
+                        '{"task": "...", "role": "..."} objects')
+            clean: list[dict] = []
+            for t in tasks[:8]:
+                if isinstance(t, dict) and str(t.get("task", "")).strip():
+                    clean.append({"task": str(t["task"]).strip(),
+                                  "role": str(t.get("role", "")).strip()})
+            if not clean:
+                return "ERROR: no valid tasks found in the list"
+            ro = read_only or self.autonomy <= 1
+            reports = team.run(clean, context=self.scout_context(),
+                               read_only=ro)
+            return team.format(reports)
+
+        def spawn_scouts(questions: list) -> str:
+            """Run one read-only scout subagent per question, IN PARALLEL.
+
+            Scouts only gather information (read_file, list_dir,
+            search_files, glob_files, file_info) — they never modify
+            anything. Use this to research several things at once
+            without bloating this conversation; each scout returns a
+            short answer + confidence."""
+            if not isinstance(questions, list) or not questions:
+                return "ERROR: questions must be a non-empty list of strings"
+            qs = [str(q).strip() for q in questions[:8] if str(q).strip()]
+            if not qs:
+                return "ERROR: no valid questions found in the list"
+            reports = swarm.scout(qs, context=self.scout_context())
+            return swarm.format(reports)
+
+        self.tools["spawn_subagents"] = Tool(
+            "spawn_subagents",
+            "Spawn REAL parallel worker subagents (up to 8 at once) to do "
+            "independent parts of the job simultaneously. Each task is "
+            '{"task": "<what to do>", "role": "coder|researcher|tester|'
+            'reviewer|analyst"}. Workers really run — real model calls, '
+            "real tools, in parallel — and return compact reports. Use "
+            "this whenever a request splits into independent subtasks "
+            "(e.g. 'build X, test Y, document Z'). Set read_only=true to "
+            "forbid writes.",
+            {"type": "object", "properties": {
+                "tasks": {"type": "array", "items": {"type": "object"},
+                          "description": 'list of {"task","role"} objects'},
+                "read_only": {"type": "boolean"}},
+                "required": ["tasks"]},
+            spawn_subagents)
+        self.tools["spawn_scouts"] = Tool(
+            "spawn_scouts",
+            "Spawn parallel READ-ONLY scout subagents to research several "
+            "questions at once. Pass a list of question strings; each "
+            "scout investigates with read-only tools and returns a short "
+            "answer + confidence. Use this to gather information from "
+            "multiple places simultaneously without bloating this "
+            "conversation.",
+            {"type": "object", "properties": {
+                "questions": {"type": "array",
+                              "items": {"type": "string"}}},
+                "required": ["questions"]},
+            spawn_scouts)
 
     # -- v3 subsystem callbacks ------------------------------------------------
 
