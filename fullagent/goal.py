@@ -70,6 +70,13 @@ CLOSING_RULES = ("ALL", "WEIGHTED_THRESHOLD", "ORDERED")
 ACHIEVED, PARTIAL, STALLED, BLOCKED, ABANDONED = (
     "ACHIEVED", "PARTIAL", "STALLED", "BLOCKED", "ABANDONED")
 
+# Every state a goal.closed event can carry. Once the kernel seals one of
+# these, the contract is settled and stops demanding attribution (§38.1);
+# without this the orphan gate dead-ends the agent forever after a goal
+# completes (e.g. a fully PROVEN contract still blocks every shell command).
+TERMINAL_STATES = frozenset(
+    (ACHIEVED, PARTIAL, STALLED, BLOCKED, ABANDONED))
+
 MIN_PROOF_CONFIDENCE = 0.85  # §39.3 hard rule for closing ACHIEVED
 
 
@@ -626,7 +633,12 @@ class GoalContract:
         complete = bool(non_advisory) and all(
             c.state in ("PROVEN", "WAIVED") for c in non_advisory)
 
-        closed_state = _last_closed_state(self.log)
+        # Prefer the fold's goal_closed — it only remembers a goal.closed
+        # AFTER the current goal.set, so a stale close from a previous
+        # contract can't leak through. _last_closed_state is the fallback
+        # for older logs folded before the kernel tracked it.
+        closed_state = (str(st.goal_closed.get("state", ""))
+                        if st.goal_closed else _last_closed_state(self.log))
 
         return GoalStatus(
             active=True,
@@ -687,8 +699,14 @@ def st_head_delta(log: EventLog, since_seq: int) -> int:
 
 
 def _last_closed_state(log: EventLog) -> str | None:
+    # Only a goal.closed AFTER the latest goal.set counts — a close from
+    # a previous contract must not leak into the current open one.
+    last_set_seq = -1
+    for e in log.events():
+        if e.type == "goal.set":
+            last_set_seq = e.seq
     for e in reversed(log.events()):
-        if e.type == "goal.closed":
+        if e.type == "goal.closed" and e.seq > last_set_seq:
             return e.data.get("state")
     return None
 
@@ -823,5 +841,33 @@ if __name__ == "__main__":
         # -- distance measure events ---------------------------------------------
         rec = gc3.measure()
         assert "distance" in rec and "velocity" in rec
+
+        # -- §38.1/§42: a closed contract stops demanding attribution ------------
+        # regression: a fully proven, sealed contract used to leave every tool
+        # call blocked as an OrphanAction forever
+        gc4 = GoalContract(EventLog(tmp / "goal4.jsonl"), judge)
+        f4 = tmp / "done.txt"
+        f4.write_text("done")
+        gc4.set_goal(
+            "single clause",
+            [{"id": "C1", "text": "done.txt exists", "weight": 1.0,
+              "proof": {"type": "file_exists", "path": str(f4)}}])
+        ok, detail = gc4.prove_by_predicate("C1")
+        assert ok, detail
+        st = gc4.status()
+        assert st.complete and st.closed_state is None  # open until sealed
+        result = gc4.close(fresh=True)
+        st = gc4.status()
+        assert st.closed_state == result["state"], (st.closed_state, result)
+        assert st.closed_state in TERMINAL_STATES
+        assert fold(gc4.log).goal_closed is not None
+        # a fresh contract reopens the world: the stale close must not leak
+        gc4.set_goal(
+            "next job",
+            [{"id": "C1", "text": "done.txt exists", "weight": 1.0,
+              "proof": {"type": "file_exists", "path": str(f4)}}])
+        st = gc4.status()
+        assert st.closed_state is None, st.closed_state
+        assert fold(gc4.log).goal_closed is None
 
     print("GOAL SELF-TEST PASS")

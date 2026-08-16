@@ -134,6 +134,9 @@ class State:
     facts: list[dict] = field(default_factory=list)
     goal: dict | None = None
     goal_done: list[str] = field(default_factory=list)
+    # §42 — the latest goal.closed event AFTER the current goal.set; None
+    # while the contract is still open
+    goal_closed: dict | None = None
     autonomy: int = 3
     swarm_reports: list[dict] = field(default_factory=list)
     team_reports: list[dict] = field(default_factory=list)
@@ -481,6 +484,7 @@ def fold(log: EventLog, branch: str | None = None,
         elif t == "goal.set":
             st.goal = d
             st.goal_done = []
+            st.goal_closed = None  # a new contract reopens the world
         elif t == "goal.clause.done":
             st.goal_done.append(d.get("clause", ""))
         elif t == "autonomy.changed":
@@ -574,6 +578,8 @@ def fold(log: EventLog, branch: str | None = None,
             st.focus_shifts.append(d)
         elif t == "goal.distance":
             st.distance_measures.append(d)
+        elif t == "goal.closed":
+            st.goal_closed = d
         elif t == "fact.learned":
             st.facts.append(d)
         elif t == "env.digest":

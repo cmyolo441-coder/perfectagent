@@ -39,6 +39,7 @@ from .config import Config, Effort, Model, Provider, PROVIDERS, model_by_id
 from .cortex import Budget, BudgetGovernor, LoopDetector
 from .council import Council
 from .crew import Crew, CrewError
+from .goal import TERMINAL_STATES
 from .report import export_html, export_markdown, forecast, format_forecast
 from .workflows import WorkflowEngine, WorkflowError
 from .cov import CoverageEngine
@@ -932,7 +933,7 @@ class Agent:
         if goal.active:
             open_clauses = [c for c in goal.clauses
                             if c.state in ("OPEN", "REGRESSED")]
-            if not open_clauses:
+            if not open_clauses or goal.closed_state in TERMINAL_STATES:
                 _stop("goal achieved — every clause proven or waived")
                 return None
             distance = goal.distance
@@ -988,10 +989,15 @@ class Agent:
 
         With an active goal, every action binds to the focus clause (the
         highest-gravity open clause). If no open clause exists, the action
-        is an orphan and is rejected before execution."""
+        is an orphan and is rejected before execution — EXCEPT once the
+        contract is closed: a terminal contract (§42) no longer demands
+        attribution, or the agent could never run another command after a
+        goal completed. Attribution only ever gates an OPEN contract."""
         goal = self.goal.status()
         if not goal.active:
             return None, None  # normal mode: no attribution required
+        if goal.closed_state in TERMINAL_STATES:
+            return None, None  # the contract is settled — no orphan gate
         focus = goal.focus or self.goal.reaim()
         open_ids = {c.id for c in goal.clauses
                     if c.state in ("OPEN", "REGRESSED")}
