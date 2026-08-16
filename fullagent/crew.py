@@ -427,22 +427,21 @@ class Crew:
         except Exception as e:  # noqa: BLE001 — a failing agent never kills the crew
             agent.state = "error"
             agent.error = f"{type(e).__name__}: {e}"
-        finally:
-            agent.finished_at = time.time()
-            # deliver queued follow-ups, if any arrived mid-loop
-            if agent.pending_messages and agent.state != "closed":
-                queued = agent.pending_messages.pop(0)
-                agent.messages.append({"role": "user",
-                                       "content": f"FOLLOW-UP: {queued}"})
-                agent.state = "running"
-                agent._thread = threading.Thread(
-                    target=self._run_loop,
-                    args=(agent, read_only, MAX_SEND_STEPS),
-                    name=f"crew:{agent.id}:queued", daemon=True)
-                agent._thread.start()
-                return
-            self.log.append("crew.done", agent.to_dict(),
-                            actor=f"crew:{agent.id}")
+        agent.finished_at = time.time()
+        # deliver queued follow-ups, if any arrived mid-loop
+        if agent.pending_messages and agent.state != "closed":
+            queued = agent.pending_messages.pop(0)
+            agent.messages.append({"role": "user",
+                                   "content": f"FOLLOW-UP: {queued}"})
+            agent.state = "running"
+            agent._thread = threading.Thread(
+                target=self._run_loop,
+                args=(agent, read_only, MAX_SEND_STEPS),
+                name=f"crew:{agent.id}:queued", daemon=True)
+            agent._thread.start()
+            return
+        self.log.append("crew.done", agent.to_dict(),
+                        actor=f"crew:{agent.id}")
 
 
 # ---------------------------------------------------------------------------

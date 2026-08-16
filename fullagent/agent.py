@@ -36,9 +36,26 @@ from .cassette import Cassette
 from .client import (APIError, TurnCancelled, chat_blocking, chat_stream,
                      estimate_tokens, is_context_overflow)
 from .config import Config, Effort, Model, Provider, PROVIDERS, model_by_id
+from .attention import AttentionEconomy
+from .bandit import BanditRouter
+from .brain import Brain
+from .causal import CausalEngine
+from .ci import CIPilot
+from .compiler import IntentCompiler, default_drafter
 from .cortex import Budget, BudgetGovernor, LoopDetector
 from .council import Council
 from .crew import Crew, CrewError
+from .debate import DebateTournament
+from .dual import DualProcess
+from .evolution import EvolutionEngine, default_benchmark
+from .fabric import KnowledgeFabric
+from .formal import ModelChecker
+from .homeo import Homeostasis
+from .market import TaskMarket
+from .mcts import TreeSearch
+from .merge import TimelineMerger
+from .mesh import MeshNode
+from .meta import RoleForge, default_drafter as role_drafter
 from .goal import TERMINAL_STATES
 from .report import export_html, export_markdown, forecast, format_forecast
 from .workflows import WorkflowEngine, WorkflowError
@@ -63,10 +80,16 @@ from .skills import SkillForge
 from .snapshots import SnapshotStore
 from .speculate import Speculator, SPECULATIVE_TOOLS
 from .squad import Squad
+from .race import RacingUniverses
 from .swarm import Swarm
+from .synth import ProgramSynthesizer, SynthSpec, default_generator
 from .taint import StaticAnalyzer
-from .team import Team
+from .team import Team, parse_worker_final
+from .theater import Theater
 from .tools import RISK_CONFIRM, Tool, build_registry, parse_tool_arguments
+from .tower import Tower
+from .tuner import ParzenTuner
+from .world import WorldModel
 
 # The system prompt lives in systemprompt.py — the single source of truth.
 # This module only ever reads it from there.
@@ -208,6 +231,55 @@ class Agent:
                            mastermind=self.mastermind)
         self.squad = Squad(self.log, self.provider, self.model, self.effort,
                            mastermind=self.mastermind)
+        # v5 advanced subsystems — same kernel, same discipline
+        self.brain = Brain(self.log, config.APP_DIR / "brain.json")
+        self.compiler = IntentCompiler(
+            self.log, default_drafter(self.provider, self.model,
+                                      self.effort),
+            executor=self._compile_wave)
+        self.evolution = EvolutionEngine(
+            self.log, self._evolution_mutator, self._evolution_evaluator)
+        self.merger = TimelineMerger(self.log)
+        self.theater = Theater(self.log)
+        self.debate = DebateTournament(
+            self.log, self._debate_speaker,
+            [m.id for m in config.MODELS if m.supports_tools][:4])
+        self.market = TaskMarket(self.log, executor=self._market_exec)
+        self.tower = Tower(self)
+        # v6 frontier subsystems — same kernel, same discipline
+        self.formal = ModelChecker(self.log)
+        self.mcts = TreeSearch(self.log, self._mcts_evaluator)
+        self.causal = CausalEngine(self.log)
+        self.bandit = BanditRouter(
+            self.log, [m.id for m in config.MODELS[:8]])
+        self.mesh = MeshNode(self.log, self.session_id,
+                             executor=self._mesh_exec)
+        self.roleforge = RoleForge(
+            self.log,
+            role_drafter(self.provider, self.model, self.effort),
+            self._role_audition)
+        self.synth = ProgramSynthesizer(
+            self.log, default_generator(self.provider, self.model,
+                                        self.effort),
+            registry=self.tools)
+        self.ci = CIPilot(self.log, Path.cwd(),
+                          runner=self._ci_runner)
+        self.tuner = ParzenTuner(self.log, {
+            "effort": [e.key for e in config.EFFORTS],
+            "worker_steps": ["low", "medium", "high"],
+        })
+        self.dual = DualProcess(self.log, self._dual_fast,
+                                self._dual_slow, brain=self.brain)
+        self.world = WorldModel(self.log, root=Path.cwd())
+        self.racer = RacingUniverses(self.log, self._race_runner,
+                                     self._race_verify)
+        self.homeo = Homeostasis(self.log, repairs={
+            "tool_error_rate": self._repair_reseed_prompts,
+            "loop_alerts": self._repair_consolidate,
+            "tool_latency_ms": self._repair_warm_caches,
+        })
+        self.attention = AttentionEconomy(self.log)
+        self.fabric = KnowledgeFabric(self.log)
         self.team = Team(self.log, self.provider, self.model, self.effort,
                          mastermind=self.mastermind)
         self.crew = Crew(self.log, self.provider, self.model, self.effort,
@@ -262,6 +334,7 @@ class Agent:
         self._register_v4_tools()
         self._register_subagent_tools()
         self._register_crew_tools()
+        self._register_advanced_tools()
         self._register_persisted_skills()
 
         # cassette: record/replay model calls (FULLAGENT_CASSETTE=path,
@@ -364,6 +437,11 @@ class Agent:
             recall = self.semantic.recall_block(query, k=3)
             if recall:
                 mem = (mem + "\n\n" + recall) if mem else recall
+        # v5: the cognitive brain — what survived the forgetting curve
+        if query:
+            brain_block = self.brain.context_block(query, k=3)
+            if brain_block:
+                mem = (mem + "\n\n" + brain_block) if mem else brain_block
         if mem:
             sections["memory"] = mem
         if self._compact_digests:
@@ -1987,6 +2065,482 @@ class Agent:
         result = chat_blocking(self.provider, self.model, self.effort,
                                messages, None, timeout=120.0)
         return result.content or ""
+
+    # -- v5 advanced subsystem bridges ---------------------------------------
+
+    def _compile_wave(self, wave: list[dict]) -> list[dict]:
+        """Executor for the Intent Compiler: one compiled wave runs as a
+        real parallel Team batch."""
+        tasks = [{"task": it["task"], "role": it["role"]} for it in wave]
+        self._push_status(f"⚙ compiled wave · {len(tasks)} item(s)")
+        reports = self.team.run(
+            tasks, context=self.scout_context(),
+            read_only=self.autonomy <= 1)
+        return [r.to_dict() for r in reports]
+
+    def _evolution_mutator(self, role: str, incumbent: str, k: int
+                           ) -> list[str]:
+        """LLM mutator: k candidate rewrites of a role brief."""
+        messages = [
+            {"role": "system", "content":
+                "You improve agent role briefs. Output ONLY candidate "
+                "briefs separated by lines with exactly --- . No prose "
+                "around them."},
+            {"role": "user", "content":
+                f"Current brief for the '{role}' worker:\n{incumbent}\n\n"
+                f"Write {k} improved variants. Each must be one "
+                f"paragraph, more specific and actionable than the "
+                f"original, keeping the same scope."}]
+        result = chat_blocking(self.provider, self.model, self.effort,
+                               messages, None, timeout=120.0)
+        parts = [p.strip() for p in
+                 (result.content or "").split("\n---")]
+        return [p for p in parts if len(p) > 40][:k]
+
+    def _evolution_evaluator(self, role: str, brief: str
+                             ) -> tuple[str, float]:
+        """Real evaluation: run the fixed benchmark with the candidate
+        brief as the worker's system prompt; score deterministically from
+        the reply's structure (STATUS/SUMMARY contract + substance)."""
+        from . import systemprompt
+        system = systemprompt.WORKER.format(role_brief=brief, max_workers=1)
+        result = chat_blocking(
+            self.provider, self.model, self.effort,
+            [{"role": "system", "content": system},
+             {"role": "user",
+              "content": default_benchmark(role)}],
+            None, timeout=180.0)
+        content = result.content or ""
+        status, summary = parse_worker_final(content)
+        score = 0.0
+        if status == "done":
+            score += 0.5
+        if summary and summary != content.strip():
+            score += 0.2                       # followed the format
+        if len(summary) > 60:
+            score += 0.2                       # real substance
+        if any(ch.isdigit() for ch in summary) or "/" in summary:
+            score += 0.1                       # concrete paths/numbers
+        return content, min(1.0, score)
+
+    def _debate_speaker(self, model_id: str, prompt: str) -> str:
+        """Route one tournament turn to its participant model."""
+        m = model_by_id(model_id) or self.model
+        provider = PROVIDERS.get(m.provider, self.provider)
+        result = chat_blocking(
+            provider, m, self.effort,
+            [{"role": "system", "content":
+                "You are a participant in an answer tournament. Follow "
+                "the instructions exactly and concisely."},
+             {"role": "user", "content": prompt}],
+            None, timeout=120.0)
+        return result.content or ""
+
+    def _market_exec(self, task: str, role: str) -> dict:
+        """Market executor: the awarded contract runs as a real Team
+        worker; its report settles the auction."""
+        reports = self.team.run(
+            [{"task": task, "role": role}],
+            context=self.scout_context(),
+            read_only=self.autonomy <= 1)
+        if not reports:
+            return {"status": "error", "summary": "no report returned",
+                    "tool_calls": 0}
+        r = reports[0]
+        return {"status": r.status,
+                "summary": r.summary or r.error or "",
+                "tool_calls": r.tool_calls}
+
+    # -- v6 frontier subsystem bridges --------------------------------------
+
+    def _mcts_evaluator(self, assignment: dict) -> float:
+        """Rollout scorer for the strategy tree: mechanical role-task
+        fit (write verbs want write-capable roles, run verbs want
+        runners) — cheap by design, MCTS supplies the exploration."""
+        from .team import ROLES
+        if not hasattr(self, "_mcts_items"):
+            return 0.0
+        fit = 0.0
+        for i, item in enumerate(self._mcts_items):
+            strat = assignment.get(i)
+            spec = ROLES.get(strat)
+            if spec is None:
+                continue
+            low = item.lower()
+            writes = any(w in low for w in ("write", "build",
+                                            "implement", "fix"))
+            runs = any(w in low for w in ("run", "test", "measure"))
+            tools = set(spec.get("tools", ()))
+            if writes and ("write_file" in tools or "edit_file"
+                           in tools):
+                fit += 1
+            if runs and "run_command" in tools:
+                fit += 1
+        n = max(1, len(self._mcts_items))
+        return min(1.0, fit / (n * 1.5))
+
+    def _mesh_exec(self, task: str, role: str) -> dict:
+        """A task delegated over the mesh runs as a real local worker."""
+        return self._market_exec(task, role)
+
+    def _role_audition(self, draft) -> float:
+        """Run the drafted role's own benchmark with its brief; score
+        the reply's structure (same yardstick as evolution)."""
+        from . import systemprompt
+        system = systemprompt.WORKER.format(role_brief=draft.brief,
+                                            max_workers=1)
+        result = chat_blocking(
+            self.provider, self.model, self.effort,
+            [{"role": "system", "content": system},
+             {"role": "user", "content": draft.benchmark}],
+            None, timeout=180.0)
+        status, summary = parse_worker_final(result.content or "")
+        score = 0.5 if status == "done" else 0.0
+        if summary and len(summary) > 60:
+            score += 0.4
+        return min(1.0, score)
+
+    def _ci_runner(self, tests: list[str]) -> tuple[bool, str]:
+        """Run the impacted tests through the real shell."""
+        from .tools import run_command
+        cmd = "python -m pytest -q " + " ".join(tests)
+        out = run_command(cmd, timeout=300)
+        return ("exit code: 0" in out, out)
+
+    def _dual_fast(self, question: str) -> str:
+        """System 1: one cheap direct model call."""
+        result = chat_blocking(
+            self.provider, self.model, self.effort,
+            [{"role": "system", "content":
+                "Answer directly and concisely."},
+             {"role": "user", "content": question}],
+            None, timeout=60.0)
+        return result.content or ""
+
+    def _dual_slow(self, question: str) -> str:
+        """System 2: the deliberate stack — a full debate tournament."""
+        result = self.debate.run(question, rounds=2)
+        return (f"[verified via {len(self.debate.models)}-model "
+                f"debate, champion {result.champion_model}] "
+                f"{result.verdict}")
+
+    def _race_runner(self, strategy: dict, task: str, cancel) -> str:
+        """One racing universe: a real worker under its strategy."""
+        if cancel.is_set():
+            return "CANCELLED"
+        reports = self.team.run(
+            [{"task": f"{strategy['instructions']}\n\nTASK: {task}",
+              "role": strategy["role"]}],
+            context=self.scout_context(),
+            read_only=self.autonomy <= 1)
+        if not reports:
+            return "ERROR: no report"
+        r = reports[0]
+        return f"STATUS: {r.status.upper()}\nSUMMARY: {r.summary or r.error}"
+
+    def _race_verify(self, task: str, result: str) -> bool:
+        return "STATUS: DONE" in result and "ERROR" not in result
+
+    def _repair_reseed_prompts(self) -> bool:
+        """Re-seal every vault prompt — cures prompt drift."""
+        for name in self.mastermind.vault.names():
+            try:
+                self.mastermind.vault.resolve(name)
+            except Exception:
+                pass
+        return True
+
+    def _repair_consolidate(self) -> bool:
+        """Loop alerts: consolidate the brain (dedupe/decay stale
+        patterns that drive repetition)."""
+        self.brain.sleep()
+        return True
+
+    def _repair_warm_caches(self) -> bool:
+        """Latency: rebuild the shared context so speculative caches
+        refill."""
+        self.scout_context()
+        return True
+
+    def _register_advanced_tools(self) -> None:
+        """Give the model the v5 powers: intent compilation, debates,
+        the task market, cognitive recall, and causal self-inspection."""
+        compiler = self.compiler
+        debate = self.debate
+        market = self.market
+        brain = self.brain
+        theater = self.theater
+
+        def compile_and_run(goal: str, read_only: bool = False) -> str:
+            """Compile the goal into an optimized wave plan, then execute
+            it wave by wave (each wave parallel)."""
+            goal = str(goal or "").strip()
+            if not goal:
+                return "ERROR: goal must be a non-empty string"
+            plan = compiler.compile(goal)
+            out = [compiler.format(plan)]
+            if not plan.waves:
+                return "\n".join(out + ["ERROR: compilation produced no "
+                                       "work items — rephrase the goal"])
+            result = compiler.execute(plan)
+            out.append(f"\nEXECUTED: {result['items']} items in "
+                       f"{result['waves']} waves · {result['done']} done · "
+                       f"{result['blocked']} blocked · {result['error']} "
+                       f"error")
+            return "\n".join(out)
+
+        def run_debate(question: str, rounds: int = 3) -> str:
+            """Run a multi-model debate tournament on a question and
+            return the calibrated verdict."""
+            question = str(question or "").strip()
+            if not question:
+                return "ERROR: question must be a non-empty string"
+            try:
+                rounds = max(1, min(int(rounds), 3))
+            except (TypeError, ValueError):
+                rounds = 3
+            self._push_status(f"⚔ debate · {len(debate.models)} models, "
+                              f"{rounds} rounds")
+            result = debate.run(question, rounds=rounds)
+            return debate.format(result)
+
+        def run_market(tasks: list) -> str:
+            """Put tasks on the market: every specialist role bids, the
+            best bid wins and executes the contract for real."""
+            if not isinstance(tasks, list) or not tasks:
+                return "ERROR: tasks must be a non-empty list of strings"
+            clean = [str(t).strip() for t in tasks if str(t).strip()]
+            if not clean:
+                return "ERROR: no valid tasks"
+            self._push_status(f"💰 market · {len(clean)} contract(s) "
+                              f"up for auction")
+            contracts = market.run(clean)
+            return market.format(contracts)
+
+        def brain_recall(query: str) -> str:
+            """Recall knowledge from the cognitive memory (forgetting
+            curve ranks what is still alive)."""
+            query = str(query or "").strip()
+            if not query:
+                return brain.format_stats()
+            block = brain.context_block(query, k=5)
+            return block or "no live memories match that query"
+
+        def inspect_why(seq: int) -> str:
+            """Causal self-inspection: why did the agent do the event at
+            this seq? Full evidence chain from the sealed envelope."""
+            try:
+                seq = int(seq)
+            except (TypeError, ValueError):
+                return "ERROR: seq must be an integer"
+            return theater.why(seq)
+
+        self.tools["compile_and_run"] = Tool(
+            "compile_and_run",
+            "COMPILE the goal through the Intent Compiler: it is drafted "
+            "into typed work items, then deterministic optimizer passes "
+            "(dedupe, dead-dependency pruning, topological layering, "
+            "write-lock scheduling) build parallel waves, and each wave "
+            "executes as REAL parallel workers. Best for multi-step "
+            "goals where order and parallelism matter.",
+            {"type": "object", "properties": {
+                "goal": {"type": "string"}, "read_only": {"type":
+                                                          "boolean"}},
+                "required": ["goal"]},
+            compile_and_run)
+        self.tools["run_debate"] = Tool(
+            "run_debate",
+            "Run a MULTI-MODEL debate tournament on a hard question: "
+            "blind proposals, mutual critique, revision, then calibrated "
+            "cluster fusion produces the verdict (with dissent). Better "
+            "than any single model on contested questions.",
+            {"type": "object", "properties": {
+                "question": {"type": "string"},
+                "rounds": {"type": "integer"}},
+                "required": ["question"]},
+            run_debate)
+        self.tools["run_market"] = Tool(
+            "run_market",
+            "Put tasks on the AGENT TASK MARKET: every specialist role "
+            "bids (capability × trust ÷ pace), the auctioneer awards "
+            "each contract to the best bidder, and the winner executes "
+            "it as a real worker. Trust updates from every outcome — the "
+            "market learns which roles deliver.",
+            {"type": "object", "properties": {
+                "tasks": {"type": "array", "items": {"type": "string"}}},
+                "required": ["tasks"]},
+            run_market)
+        self.tools["brain_recall"] = Tool(
+            "brain_recall",
+            "Recall knowledge from the cognitive memory — the four-store "
+            "brain with a forgetting curve ranks what is still alive and "
+            "relevant. Use before re-researching anything; it may "
+            "already be known. With an empty query, returns brain stats.",
+            {"type": "object", "properties": {
+                "query": {"type": "string"}},
+                "required": ["query"]},
+            brain_recall)
+        self.tools["inspect_why"] = Tool(
+            "inspect_why",
+            "Causal self-inspection: pass an event seq (shown in tool "
+            "results and the event log) and get the full WHY chain — "
+            "which user message, goal clause, or prior tool call caused "
+            "it. Use it to explain or audit the agent's own behaviour.",
+            {"type": "object", "properties": {
+                "seq": {"type": "integer"}},
+                "required": ["seq"]},
+            inspect_why)
+
+        # -- v6 frontier tools ------------------------------------------------
+
+        def verify_plan(goal: str) -> str:
+            """Compile a goal into a plan, then formally verify it
+            against temporal safety properties before any execution."""
+            goal = str(goal or "").strip()
+            if not goal:
+                return "ERROR: goal must be a non-empty string"
+            plan = compiler.compile(goal)
+            r = self.formal.verify_plan(plan.waves)
+            head = (f"FORMAL VERIFICATION — {'PASS ✓' if r.ok else
+                    'REJECTED ✗'} "
+                    f"({r.checked} trace(s) checked)")
+            return "\n".join([head, compiler.format(plan)]
+                             + [f"  ⚠ {v['property']}: {v['why']}"
+                                for v in r.violations])
+
+        def mcts_solve(goal: str, strategies: list | None = None
+                       ) -> str:
+            """Tree-search the best strategy assignment: split the goal
+            into work items, search (MCTS) which approach should handle
+            each, return the winning assignment."""
+            goal = str(goal or "").strip()
+            if not goal:
+                return "ERROR: goal must be a non-empty string"
+            items = [s.strip() for s in goal.split(";") if s.strip()]
+            strats = ([str(s) for s in strategies if str(s).strip()]
+                      if isinstance(strategies, list) and strategies
+                      else ["coder", "architect", "debugger", "tester"])
+            self._mcts_items = items
+            report = self.mcts.search(items, strats,
+                                      iterations=120, deadline_s=20.0)
+            lines = [f"MCTS — best score {report.best_score:.2f} in "
+                     f"{report.iterations} iterations "
+                     f"({report.nodes} nodes)"]
+            for i, item in enumerate(items):
+                lines.append(f"  [{report.best_assignment.get(i, '?')}] "
+                             f"{item[:70]}")
+            return "\n".join(lines)
+
+        def synthesize_tool(name: str, description: str,
+                            examples: list) -> str:
+            """Write a NEW deterministic Python tool: draft from the
+            spec, validate the AST, test it against every example, and
+            register it as a real callable tool."""
+            if not isinstance(examples, list) or not examples:
+                return ("ERROR: examples must be a non-empty list of "
+                        '{"args": {...}, "want": ...}')
+            spec = SynthSpec(name=str(name or ""),
+                             description=str(description or ""),
+                             examples=examples)
+            result = self.synth.synthesize(spec)
+            return ("✓ " + result.reason if result.ok
+                    else "ERROR: " + result.reason)
+
+        def predict_impact(path: str) -> str:
+            """Predict what breaks if a file changes — learned from
+            dependencies AND real historical breakage rates."""
+            impact = self.world.predict_impact(str(path or ""))
+            return impact.format()
+
+        def race_strategies(task: str) -> str:
+            """Launch 3 parallel strategy universes on one task; the
+            first verified result wins, the rest are cancelled."""
+            task = str(task or "").strip()
+            if not task:
+                return "ERROR: task must be a non-empty string"
+            self._push_status("⚡ race · 3 universes launching")
+            result = self.racer.race(task, timeout=420.0)
+            return self.racer.format(result)
+
+        def knowledge_ask(subject: str, predicate: str,
+                          at: float | None = None) -> str:
+            """Query the bitemporal knowledge graph: the live truth, or
+            as of any past moment."""
+            hits = self.fabric.query(str(subject), str(predicate), at)
+            if not hits:
+                return f"no live fact for {subject} {predicate}"
+            return "\n".join(f.to_dict().__str__() for f in hits)
+
+        self.tools["verify_plan"] = Tool(
+            "verify_plan",
+            "FORMALLY VERIFY a plan: compile the goal, then model-check "
+            "every execution the plan permits against temporal safety "
+            "properties (snapshot-before-write, write serialisation, "
+            "verification-after-write). A violated plan is REJECTED "
+            "with a counterexample — use before executing risky plans.",
+            {"type": "object", "properties": {
+                "goal": {"type": "string"}},
+                "required": ["goal"]},
+            verify_plan)
+        self.tools["mcts_solve"] = Tool(
+            "mcts_solve",
+            "Monte Carlo Tree Search over strategies: split a goal by "
+            "semicolons into work items and search which approach "
+            "(coder/architect/debugger/tester or custom strategy ids) "
+            "should handle each — UCB1 exploration, rollout scoring, "
+            "best assignment returned.",
+            {"type": "object", "properties": {
+                "goal": {"type": "string",
+                         "description": "items separated by ;"},
+                "strategies": {"type": "array",
+                               "items": {"type": "string"}}},
+                "required": ["goal"]},
+            mcts_solve)
+        self.tools["synthesize_tool"] = Tool(
+            "synthesize_tool",
+            "WRITE A NEW TOOL: given a snake_case name, a description, "
+            "and example cases ({'args': {...}, 'want': expected}), a "
+            "pure deterministic Python function is drafted, AST-"
+            "validated, example-tested, and registered as a REAL "
+            "callable tool. Use when no existing tool fits.",
+            {"type": "object", "properties": {
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "examples": {"type": "array",
+                             "items": {"type": "object"}}},
+                "required": ["name", "description", "examples"]},
+            synthesize_tool)
+        self.tools["predict_impact"] = Tool(
+            "predict_impact",
+            "Predict what breaks if a file changes: learned dependency "
+            "edges × historical breakage rates, ranked by probability. "
+            "Use BEFORE risky edits to see the blast radius.",
+            {"type": "object", "properties": {
+                "path": {"type": "string"}},
+                "required": ["path"]},
+            predict_impact)
+        self.tools["race_strategies"] = Tool(
+            "race_strategies",
+            "RACE three strategy universes in parallel on one task "
+            "(direct / careful / parallel approaches); the first "
+            "verified result WINS and the rest are cancelled. Use for "
+            "hard problems where you are unsure which approach works.",
+            {"type": "object", "properties": {
+                "task": {"type": "string"}},
+                "required": ["task"]},
+            race_strategies)
+        self.tools["knowledge_ask"] = Tool(
+            "knowledge_ask",
+            "Query the bitemporal knowledge graph — facts with validity "
+            "windows. Ask for the live truth or 'as of' any past time "
+            "('at' = unix timestamp). Use it to remember project facts "
+            "that change over time.",
+            {"type": "object", "properties": {
+                "subject": {"type": "string"},
+                "predicate": {"type": "string"},
+                "at": {"type": "number"}},
+                "required": ["subject", "predicate"]},
+            knowledge_ask)
 
     def _register_persisted_skills(self) -> None:
         """Load previously forged skills from disk and expose them as tools.

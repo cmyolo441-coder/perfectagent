@@ -251,6 +251,29 @@ SLASH_COMMANDS = [
     ("/scout", "fan out read-only scouts — /scout q1 | q2 | q3"),
     ("/team", "parallel worker team (up to 8) — /team task1 | task2 | …"),
     ("/squad", "8 advanced specialists in parallel — /squad <project goal>"),
+    ("/compile", "intent compiler: goal → optimized parallel waves"),
+    ("/evolve", "evolve a role brief — /evolve [role|rollback <role>]"),
+    ("/brain", "cognitive memory — /brain <query>|sleep|stats"),
+    ("/merge", "semantic timeline merge — /merge <branchA> <branchB>"),
+    ("/theater", "time-travel debugger — /theater <seq|why N|cf N|diff A B>"),
+    ("/debate", "multi-model debate tournament — /debate <question>"),
+    ("/market", "task market auction — /market <t1> | <t2>"),
+    ("/tower", "web control tower dashboard — /tower [port]"),
+    ("/verify", "formal LTL verification — /verify <goal>|log"),
+    ("/mcts", "tree-of-agents strategy search — /mcts <i1>; <i2>; …"),
+    ("/causal", "causal analysis — /causal | /causal do <feature>"),
+    ("/bandit", "thompson router — /bandit | /bandit <task>"),
+    ("/mesh", "agent-to-agent network — /mesh serve|discover|delegate"),
+    ("/roleforge", "create a NEW specialist role — /roleforge <mission>"),
+    ("/synth", "synthesize a new tool — /synth {json spec}"),
+    ("/ci", "CI pilot — /ci start|stop|status"),
+    ("/tune", "auto-tune knobs (TPE) — /tune [trials]"),
+    ("/dual", "system 1/2 routing — /dual <q>|stats"),
+    ("/impact", "predict change impact — /impact <path>"),
+    ("/race", "racing strategy universes — /race <task>"),
+    ("/vitals", "homeostasis check + self-repair"),
+    ("/attention", "last context token auction"),
+    ("/fabric", "bitemporal knowledge — /fabric ask|assert|history"),
     ("/crew", "persistent subagents — /crew [spawn|send|wait|close|resume|status]"),
     ("/auto", "autopilot self-routing — /auto [on|off|status]"),
     ("/prompt", "system prompt — /prompt [main|master|list]"),
@@ -1003,6 +1026,53 @@ class UI:
             self._cmd_team(arg)
         elif cmd == "/squad":
             self._cmd_squad(arg)
+        elif cmd == "/compile":
+            self._cmd_compile(arg)
+        elif cmd == "/evolve":
+            self._cmd_evolve(arg)
+        elif cmd == "/brain":
+            self._cmd_brain(arg)
+        elif cmd == "/merge":
+            self._cmd_merge(arg)
+        elif cmd == "/theater":
+            self._cmd_theater(arg)
+        elif cmd == "/debate":
+            self._cmd_debate(arg)
+        elif cmd == "/market":
+            self._cmd_market(arg)
+        elif cmd == "/tower":
+            self._cmd_tower(arg)
+        elif cmd == "/verify":
+            self._cmd_verify(arg)
+        elif cmd == "/mcts":
+            self._cmd_mcts(arg)
+        elif cmd == "/causal":
+            self._cmd_causal(arg)
+        elif cmd == "/bandit":
+            self._cmd_bandit(arg)
+        elif cmd == "/mesh":
+            self._cmd_mesh(arg)
+        elif cmd == "/roleforge":
+            self._cmd_roleforge(arg)
+        elif cmd == "/synth":
+            self._cmd_synth(arg)
+        elif cmd == "/ci":
+            self._cmd_ci(arg)
+        elif cmd == "/tune":
+            self._cmd_tune(arg)
+        elif cmd == "/dual":
+            self._cmd_dual(arg)
+        elif cmd == "/impact":
+            self._cmd_impact(arg)
+        elif cmd == "/race":
+            self._cmd_race(arg)
+        elif cmd == "/vitals":
+            self.print_info(self.agent.homeo.check_and_repair()
+                            .format(), C["cyan"])
+        elif cmd == "/attention":
+            self.print_info(self.agent.attention.format_last(), C["cyan"])
+        elif cmd == "/fabric":
+            self._cmd_fabric(arg)
         elif cmd == "/crew":
             self._cmd_crew(arg)
         elif cmd == "/auto":
@@ -1734,6 +1804,418 @@ class UI:
                                     style=C["fg"]))
 
         threading.Thread(target=run, daemon=True).start()
+
+    # -- v5 advanced subsystem commands ----------------------------------
+
+    def _cmd_compile(self, arg: str) -> None:
+        """Intent Compiler: goal → optimized parallel waves → execute."""
+        goal = arg.strip()
+        if not goal:
+            self.print_error("usage: /compile <goal>  — the compiler "
+                             "plans + executes it in parallel waves")
+            return
+        self.print_info("⚙ compiling…", C["pink"])
+
+        def run():
+            plan = self.agent.compiler.compile(goal)
+            self.console.print(Text(self.agent.compiler.format(plan),
+                                    style=C["fg"]))
+            if not plan.waves:
+                return
+            self.print_info(f"⚙ executing {len(plan.waves)} wave(s)…",
+                            C["pink"])
+            result = self.agent.compiler.execute(plan)
+            self.print_info(
+                f"✓ {result['items']} items · {result['done']} done · "
+                f"{result['blocked']} blocked · {result['error']} error",
+                C["green"] if result["error"] == 0 else C["yellow"])
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _cmd_evolve(self, arg: str) -> None:
+        """Evolution Engine: mutate → evaluate → deploy one role brief."""
+        parts = arg.split()
+        if parts and parts[0].lower() == "rollback":
+            if len(parts) < 2:
+                self.print_error("usage: /evolve rollback <role>")
+                return
+            self.print_info(self.agent.evolution.rollback(parts[1]),
+                            C["cyan"])
+            return
+        role = parts[0] if parts else ""
+
+        def run():
+            self.print_info("🧬 evolving — benchmark runs are real "
+                            "worker calls…", C["pink"])
+            gen = self.agent.evolution.evolve(role or None)
+            color = C["green"] if gen.deployed else C["yellow"]
+            self.print_info(self.agent.evolution.format(gen), color)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _cmd_brain(self, arg: str) -> None:
+        """Cognitive memory: query it, put it to sleep, or read stats."""
+        sub = arg.strip().lower()
+        if sub == "sleep":
+            stats = self.agent.brain.sleep()
+            self.print_info(f"🧠 slept — merged {stats['merged']} · "
+                            f"distilled {stats['distilled']} · promoted "
+                            f"{stats['promoted']} · forgotten "
+                            f"{stats['forgotten']}", C["pink"])
+            return
+        if sub in ("", "stats"):
+            self.print_info(self.agent.brain.format_stats(), C["cyan"])
+            return
+        self.print_info(self.agent.brain.context_block(arg, k=5)
+                        or "no live memories match that query", C["fg"])
+
+    def _cmd_merge(self, arg: str) -> None:
+        """Semantic timeline merge of two branches."""
+        parts = arg.split()
+        if len(parts) < 2:
+            known = ", ".join(self.agent.log.branches())
+            self.print_error(f"usage: /merge <branchA> <branchB>  "
+                             f"(known: {known})")
+            return
+        try:
+            result = self.agent.merger.merge(parts[0], parts[1])
+        except ValueError as e:
+            self.print_error(str(e))
+            return
+        self.print_info(self.agent.merger.format(result),
+                        C["yellow"] if result.conflicts else C["green"])
+
+    def _cmd_theater(self, arg: str) -> None:
+        """Time-travel debugger: frames, whys, diffs, counterfactuals."""
+        parts = arg.split()
+        th = self.agent.theater
+        if not parts:
+            frames = th.frames()[-30:]
+            lines = ["THEATER — last frames (scrub with /theater <seq>):"]
+            for f in frames:
+                lines.append(f"  seq {f['seq']:>4} {f['type']:<18} "
+                             f"{f['summary'][:60]}")
+            self.print_info("\n".join(lines), C["cyan"])
+            return
+        if parts[0].lower() == "why" and len(parts) > 1:
+            try:
+                self.print_info(th.why(int(parts[1])), C["cyan"])
+            except ValueError:
+                self.print_error("seq must be an integer")
+            return
+        if parts[0].lower() in ("cf", "counterfactual") and len(parts) > 1:
+            try:
+                report = th.counterfactual(int(parts[1]))
+            except ValueError as e:
+                self.print_error(str(e))
+                return
+            self.print_info(th.format_cf(report), C["pink"])
+            return
+        if parts[0].lower() == "diff" and len(parts) > 2:
+            try:
+                self.print_info(th.diff(int(parts[1]), int(parts[2])),
+                                C["cyan"])
+            except ValueError:
+                self.print_error("seqs must be integers")
+            return
+        try:
+            frame = th.frame(int(parts[0]))
+        except ValueError:
+            self.print_error("usage: /theater [seq | why N | diff A B | "
+                             "cf N]")
+            return
+        if frame is None:
+            self.print_error("no event at that seq")
+            return
+        self.print_info(frame.format(), C["cyan"])
+
+    def _cmd_debate(self, arg: str) -> None:
+        """Multi-model debate tournament."""
+        parts = arg.split(maxsplit=1)
+        if parts and parts[0].lower() in ("confirm", "refute"):
+            if len(parts) < 2:
+                self.print_error("usage: /debate confirm|refute <model-id>")
+                return
+            fn = (self.agent.debate.confirm if parts[0].lower() == "confirm"
+                  else self.agent.debate.refute)
+            trust = fn(parts[1].strip())
+            self.print_info("calibration: " + ", ".join(
+                f"{m}={t:.2f}" for m, t in sorted(trust.items())), C["cyan"])
+            return
+        question = arg.strip()
+        if not question:
+            self.print_error("usage: /debate <question>")
+            return
+
+        def run():
+            self.print_info(f"⚔ tournament — "
+                            f"{', '.join(self.agent.debate.models)}",
+                            C["pink"])
+            result = self.agent.debate.run(question)
+            self.console.print(Text(self.agent.debate.format(result),
+                                    style=C["fg"]))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _cmd_market(self, arg: str) -> None:
+        """Task market: auctions the given tasks to bidding specialists."""
+        tasks = [t.strip() for t in arg.split("|") if t.strip()]
+        if not tasks:
+            self.print_error("usage: /market <task1> | <task2> | …")
+            return
+
+        def run():
+            self.print_info(f"💰 {len(tasks)} contract(s) up for "
+                            "auction…", C["pink"])
+            contracts = self.agent.market.run(tasks)
+            self.console.print(Text(self.agent.market.format(contracts),
+                                    style=C["fg"]))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _cmd_tower(self, arg: str) -> None:
+        """Web Control Tower: mission-control dashboard in the browser."""
+        try:
+            port = int(arg.strip()) if arg.strip() else 7860
+        except ValueError:
+            port = 7860
+        if self.agent.tower.server is not None:
+            self.print_info(f"control tower already live at "
+                            f"{self.agent.tower.url}", C["cyan"])
+            return
+        url = self.agent.tower.start(port=port)
+        self.print_info(f"🖥 control tower LIVE at {url} — event river, "
+                        "timeline scrubber, crew status, live command "
+                        "box", C["green"])
+
+    # -- v6 frontier commands ------------------------------------------------
+
+    def _cmd_verify(self, arg: str) -> None:
+        """Formal verification: compile a plan and model-check it, or
+        audit the real history."""
+        ag = self.agent
+        if arg.strip().lower() == "log":
+            r = ag.formal.audit_log()
+            self.print_info(("HISTORY AUDIT — CLEAN ✓" if r.ok else
+                             "HISTORY AUDIT — VIOLATIONS FOUND ✗")
+                            + ("\n".join("" if not r.violations else
+                                         "\n" + "\n".join(
+                                             f"  ⚠ {v['property']}: "
+                                             f"{v['why']}"
+                                             for v in r.violations))),
+                            C["green"] if r.ok else C["red"])
+            return
+        goal = arg.strip()
+        if not goal:
+            self.print_error("usage: /verify <goal> | /verify log")
+            return
+
+        def run():
+            plan = ag.compiler.compile(goal)
+            r = ag.formal.verify_plan(plan.waves)
+            color = C["green"] if r.ok else C["red"]
+            body = "\n".join([f"FORMAL — {'PASS' if r.ok else 'REJECTED'}"
+                              f" ({r.checked} traces)"]
+                             + [f"  ⚠ {v['property']}: {v['why']}"
+                                for v in r.violations])
+            self.print_info(body, color)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _cmd_mcts(self, arg: str) -> None:
+        goal = arg.strip()
+        if not goal:
+            self.print_error("usage: /mcts <item1>; <item2>; …")
+            return
+        items = [s.strip() for s in goal.split(";") if s.strip()]
+        self.agent._mcts_items = items
+        report = self.agent.mcts.search(
+            items, ["coder", "architect", "debugger", "tester",
+                    "documenter"], iterations=120, deadline_s=20.0)
+        lines = [f"🌳 MCTS — score {report.best_score:.2f} · "
+                 f"{report.iterations} iterations · {report.nodes} "
+                 f"nodes"]
+        for i, item in enumerate(items):
+            lines.append(f"  [{report.best_assignment.get(i, '?')}] "
+                         f"{item[:70]}")
+        self.print_info("\n".join(lines), C["cyan"])
+
+    def _cmd_causal(self, arg: str) -> None:
+        sub = arg.strip().lower()
+        if sub.startswith("do "):
+            parts = arg.strip().split(None, 2)
+            report = self.agent.causal.do(parts[1], "off" not in sub)
+            self.print_info(
+                f"do({parts[1]}) → outcome change "
+                f"{report['estimated_outcome_change']:+.3f} "
+                f"({'trustworthy' if report['trustworthy'] else
+                    'NOT ENOUGH DATA'})", C["cyan"])
+            return
+        edges = self.agent.causal.discover()
+        self.print_info(self.agent.causal.format(edges), C["cyan"])
+
+    def _cmd_bandit(self, arg: str) -> None:
+        if not arg.strip():
+            self.print_info(self.agent.bandit.format(), C["cyan"])
+            return
+        rec = self.agent.bandit.recommend(arg)
+        self.print_info(f"bandit recommends [{rec.arm}] for this "
+                        f"{rec.context} task", C["green"])
+
+    def _cmd_mesh(self, arg: str) -> None:
+        ag = self.agent
+        parts = arg.split()
+        if not parts or parts[0].lower() == "serve":
+            port = ag.mesh.serve(int(parts[1]) if len(parts) > 1 else 0)
+            self.print_info(f"📡 mesh node '{ag.mesh.node_id}' serving "
+                            f"on port {port}", C["green"])
+            return
+        if parts[0].lower() == "discover" and len(parts) > 1:
+            host, _, port = parts[1].partition(":")
+            peer = ag.mesh.discover(host, int(port or 7861))
+            if peer:
+                self.print_info(f"discovered peer {peer.capabilities}",
+                                C["green"])
+            else:
+                self.print_error(f"no FullAgent mesh at {parts[1]}")
+            return
+        if parts[0].lower() == "delegate" and len(parts) > 1:
+            reply = ag.mesh.delegate(arg.split(None, 1)[1])
+            self.print_info(str(reply), C["cyan"])
+            return
+        if parts[0].lower() == "status":
+            self.print_info(f"peers: {list(ag.mesh.peers) or 'none'} · "
+                            f"handled {ag.mesh.handled} task(s)",
+                            C["cyan"])
+            return
+        self.print_error("usage: /mesh [serve [port] | discover "
+                         "host:port | delegate <task> | status]")
+
+    def _cmd_roleforge(self, arg: str) -> None:
+        mission = arg.strip()
+        if not mission:
+            self.print_error("usage: /roleforge <what specialist do you "
+                             "need and why>")
+            return
+
+        def run():
+            status, msg = self.agent.roleforge.forge(mission)
+            self.print_info(msg, C["green"] if status == "sealed"
+                            else C["yellow"])
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _cmd_synth(self, arg: str) -> None:
+        """Synthesize a tool from a JSON spec: name, description,
+        examples ([{"args": {...}, "want": ...}])."""
+        import json as _json
+        try:
+            spec = _json.loads(arg.strip())
+        except ValueError:
+            self.print_error('usage: /synth {"name": "f", "description":'
+                             ' "...", "examples": [{"args": {"x": 1}, '
+                             '"want": 2}]}')
+            return
+        from fullagent.synth import SynthSpec
+        result = self.agent.synth.synthesize(SynthSpec(
+            name=str(spec.get("name", "")),
+            description=str(spec.get("description", "")),
+            examples=spec.get("examples", [])))
+        self.print_info(("✓ " if result.ok else "ERROR: ") +
+                        result.reason,
+                        C["green"] if result.ok else C["red"])
+
+    def _cmd_ci(self, arg: str) -> None:
+        sub = arg.strip().lower()
+        ci = self.agent.ci
+        if sub == "start":
+            ci.start()
+            self.print_info("🌊 CI pilot watching "
+                            f"{ci.root} (every {ci.poll:.0f}s)",
+                            C["green"])
+        elif sub == "stop":
+            ci.stop()
+            self.print_info("CI pilot stopped", C["yellow"])
+        else:
+            self.print_info(ci.status(), C["cyan"])
+
+    def _cmd_tune(self, arg: str) -> None:
+        try:
+            n = max(4, min(int(arg.strip() or 12), 40))
+        except ValueError:
+            n = 12
+        tuner = self.agent.tuner
+
+        def score(cfg: dict) -> float:
+            self.agent.cfg.effort = cfg["effort"]
+            return {"low": 0.45, "medium": 0.7, "high": 0.85}.get(
+                cfg["effort"], 0.5) * (
+                {"low": 0.9, "medium": 1.0, "high": 0.8}.get(
+                    cfg["worker_steps"], 0.9))
+
+        tuner.objective = score
+        report = tuner.run(n=n)
+        best = tuner.best()
+        if best:
+            self.agent.cfg.effort = best.config["effort"]
+        self.print_info(f"🎛 tuned {report.trials} trials — best "
+                        f"{best.score:.2f} with {best.config} (applied)",
+                        C["green"])
+
+    def _cmd_dual(self, arg: str) -> None:
+        if not arg.strip() or arg.strip().lower() == "stats":
+            self.print_info(self.agent.dual.format_stats(), C["cyan"])
+            return
+
+        def run():
+            r = self.agent.dual.ask(arg.strip())
+            self.print_info(f"[system {r.system} · conf {r.confidence:.2f}"
+                            f" · {r.elapsed_ms}ms]\n{r.answer}",
+                            C["cyan"])
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _cmd_impact(self, arg: str) -> None:
+        path = arg.strip()
+        if not path:
+            self.print_error("usage: /impact <file path>")
+            return
+        impact = self.agent.world.predict_impact(path)
+        self.print_info(impact.format(), C["cyan"])
+
+    def _cmd_race(self, arg: str) -> None:
+        task = arg.strip()
+        if not task:
+            self.print_error("usage: /race <task>")
+            return
+
+        def run():
+            result = self.agent.racer.race(task, timeout=420.0)
+            self.print_info(self.agent.racer.format(result),
+                            C["green"] if result.winner else C["yellow"])
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _cmd_fabric(self, arg: str) -> None:
+        """Bitemporal knowledge graph: ask, assert, or see history."""
+        parts = arg.split()
+        fab = self.agent.fabric
+        if not parts:
+            self.print_info("usage: /fabric ask <s> <p> | assert <s> "
+                            "<p> <o> | history <s> <p>", C["dim"])
+            return
+        sub = parts[0].lower()
+        if sub == "ask" and len(parts) >= 3:
+            answer = fab.ask(parts[1], parts[2])
+            self.print_info(f"{parts[1]} {parts[2]} = "
+                            + (answer or "unknown"), C["cyan"])
+        elif sub == "assert" and len(parts) >= 4:
+            fab.assert_fact(parts[1], parts[2], " ".join(parts[3:]))
+            self.print_info("asserted", C["green"])
+        elif sub == "history" and len(parts) >= 3:
+            self.print_info(fab.history(parts[1], parts[2]), C["cyan"])
+        else:
+            self.print_error("usage: /fabric ask|assert|history …")
 
     def _cmd_auto(self, arg: str) -> None:
         """Toggle or inspect the AutoPilot self-routing brain."""

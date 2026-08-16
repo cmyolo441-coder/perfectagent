@@ -142,6 +142,9 @@ class State:
     team_reports: list[dict] = field(default_factory=list)
     # squad — 8-specialist parallel runs, newest last
     squad_reports: list[dict] = field(default_factory=list)
+    # advanced subsystems (compiler/evolution/brain/merge/theater/debate/
+    # market) — one bucket, newest last; each module filters by "type"
+    advanced_events: list[dict] = field(default_factory=list)
     verdicts: list[dict] = field(default_factory=list)
     # §8.3 / §9 — snapshot store references, newest last
     snapshots: list[dict] = field(default_factory=list)
@@ -447,6 +450,34 @@ class EventLog:
 _MUTATING_TOOLS = {"write_file", "edit_file", "create_directory",
                    "copy_path", "move_path", "delete_path"}
 
+# Event types of the advanced subsystems folded into State.advanced_events
+ADVANCED_EVENT_TYPES = frozenset({
+    "compile.plan", "compile.wave", "compile.done",
+    "evolution.generation", "evolution.deployed", "evolution.rollback",
+    "brain.remembered", "brain.recalled", "brain.consolidated",
+    "brain.forgotten",
+    "merge.started", "merge.merged", "merge.conflict",
+    "theater.counterfactual",
+    "debate.round", "debate.verdict", "debate.calibration",
+    "market.announce", "market.bid", "market.award", "market.settle",
+    # v6 advanced subsystems
+    "verify.plan", "verify.violation", "verify.trace",
+    "mcts.search", "mcts.best",
+    "causal.edge", "causal.intervention",
+    "bandit.pull", "bandit.update",
+    "mesh.node", "mesh.task", "mesh.result",
+    "meta.role.drafted", "meta.role.sealed", "meta.role.rejected",
+    "synth.tool.drafted", "synth.tool.tested", "synth.tool.registered",
+    "ci.watch", "ci.run", "ci.streak",
+    "tuner.trial", "tuner.best",
+    "dual.route", "dual.escalation",
+    "world.impact", "world.learn",
+    "race.start", "race.winner", "race.cancel",
+    "homeo.check", "homeo.repair",
+    "attention.auction",
+    "fabric.assert", "fabric.retract",
+})
+
 
 def fold(log: EventLog, branch: str | None = None,
          upto_seq: int | None = None,
@@ -504,6 +535,8 @@ def fold(log: EventLog, branch: str | None = None,
             st.team_reports.append(d)
         elif t == "squad.report":
             st.squad_reports.append(d)
+        elif t in ADVANCED_EVENT_TYPES:
+            st.advanced_events.append({"type": t, **d})
         elif t == "prompt.sealed":
             st.prompt_sealed.append(d)
         elif t == "prompt.dispatch":
