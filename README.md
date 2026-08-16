@@ -19,6 +19,24 @@ works, the bottom border shows a live animated status:
 Tokens stream live above the box, tool calls appear as `⚙ name args` with
 `✓`/`✗` results, and each turn ends with a stats line (`2.3s · 512→87 tokens`).
 
+## Install (binary — curl one-liner)
+
+Linux x86_64 single-file binary, no Python needed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cmyolo441-coder/perfectagent/main/install.sh | bash
+```
+
+Or download the binary directly from the [v2.2 release](https://github.com/cmyolo441-coder/perfectagent/releases/tag/v2.2):
+
+```bash
+curl -fsSL -o fullagent https://github.com/cmyolo441-coder/perfectagent/releases/download/v2.2/fullagent-linux-x64
+chmod +x fullagent && sudo mv fullagent /usr/local/bin/
+```
+
+Then just run `fullagent`. Set `INSTALL_DIR` to install elsewhere
+(e.g. `INSTALL_DIR=$HOME/.local/bin curl -fsSL … | bash`).
+
 ## Run
 
 ```bash
