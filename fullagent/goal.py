@@ -393,7 +393,6 @@ class GoalContract:
         clause becomes the focus; everything re-aims at it."""
         st = self.status()
         scores: dict[str, float] = {}
-        proven_ids = {c.id for c in st.clauses if c.state == "PROVEN"}
         for c in st.clauses:
             if c.state in ("PROVEN", "WAIVED"):
                 scores[c.id] = 0.0

@@ -44,7 +44,7 @@ SESSIONS_DIR = APP_DIR / "sessions"
 EVENT_LOG_FILE = APP_DIR / "eventlog.jsonl"
 
 DEFAULT_TIMEOUT = 300.0
-MAX_TOOL_ITERATIONS = 40
+MAX_TOOL_ITERATIONS = 80
 MAX_TOOL_OUTPUT_CHARS = 24_000
 # One output ceiling for every effort level: 200k tokens.
 MAX_TOKENS = 200_000

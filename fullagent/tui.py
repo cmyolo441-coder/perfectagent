@@ -243,13 +243,14 @@ SLASH_COMMANDS = [
     ("/impact", "code impact analysis — /impact <symbol> [path]"),
     ("/forge", "environment digest + drift — /forge [probe|drift]"),
     ("/oracle", "post-run analysis, calibration, facts"),
-    ("/budget", "budget governor status"),
+    ("/budget [steps N|usd X|reset]", "budget governor status/extend"),
     ("/constitution", "standing rules — /constitution [show|edit]"),
     ("/replay", "replay the session log as a film (text)"),
     ("/memory", "recent episodes + dead-end ledger"),
     ("/judge", "deterministic check — /judge <type> <json-or-args>"),
     ("/scout", "fan out read-only scouts — /scout q1 | q2 | q3"),
     ("/team", "parallel worker team (up to 8) — /team task1 | task2 | …"),
+    ("/squad", "8 advanced specialists in parallel — /squad <project goal>"),
     ("/crew", "persistent subagents — /crew [spawn|send|wait|close|resume|status]"),
     ("/auto", "autopilot self-routing — /auto [on|off|status]"),
     ("/prompt", "system prompt — /prompt [main|master|list]"),
@@ -987,7 +988,7 @@ class UI:
         elif cmd == "/oracle":
             self.print_info(self.agent.oracle.format_report(), C["cyan"])
         elif cmd == "/budget":
-            self._cmd_budget()
+            self._cmd_budget(arg)
         elif cmd == "/constitution":
             self._cmd_constitution(arg)
         elif cmd == "/replay":
@@ -1000,6 +1001,8 @@ class UI:
             self._cmd_scout(arg)
         elif cmd == "/team":
             self._cmd_team(arg)
+        elif cmd == "/squad":
+            self._cmd_squad(arg)
         elif cmd == "/crew":
             self._cmd_crew(arg)
         elif cmd == "/auto":
@@ -1519,16 +1522,47 @@ class UI:
                     for k, v in d["tools"].items()))
             self.print_info("\n".join(lines), C["cyan"])
 
-    def _cmd_budget(self) -> None:
+    def _cmd_budget(self, arg: str = "") -> None:
         gov = self.agent.budget_gov
+        parts = arg.split()
+        if parts:
+            sub = parts[0].lower()
+            try:
+                if sub == "reset":
+                    gov.reset()
+                    self.print_info("budget spend reset — the governor "
+                                    "counts from now", C["green"])
+                    return
+                if sub in ("steps", "usd", "tokens", "files") \
+                        and len(parts) >= 2:
+                    self.print_info(gov.set_limit(sub, parts[1]), C["green"])
+                    return
+                if sub in ("extend", "set") and len(parts) >= 3 \
+                        and parts[1].lower() in ("steps", "usd", "tokens",
+                                                 "files"):
+                    self.print_info(
+                        gov.set_limit(parts[1].lower(), parts[2]), C["green"])
+                    return
+            except ValueError as e:
+                self.print_error(f"bad value: {e}")
+                return
+            self.print_error("usage: /budget [reset | steps N | usd X | "
+                             "tokens N | files N]")
+            return
         s = gov.spend()
         b = gov.budget
         ok, reason = gov.check()
+
+        def _fmt(v) -> str:
+            return "∞" if v == float("inf") else str(v)
+
         lines = [f"budget {'OK' if ok else 'BREACHED'}",
-                 f"  usd    ${s['usd']:.4f} / ${b.max_usd}",
-                 f"  steps  {s['steps']} / {b.max_steps}",
-                 f"  tokens {s['tokens']} / {b.max_tokens}",
-                 f"  files  {s['files']} / {b.max_files}"]
+                 f"  usd    ${s['usd']:.4f} / ${_fmt(b.max_usd)}",
+                 f"  steps  {s['steps']} / {_fmt(b.max_steps)}",
+                 f"  tokens {s['tokens']} / {_fmt(b.max_tokens)}",
+                 f"  files  {s['files']} / {_fmt(b.max_files)}",
+                 "  spend is UNLIMITED by default — set a cap with "
+                 "/budget steps N · /budget usd X · /budget reset"]
         if not ok:
             lines.append(f"  ⚠ {reason}")
         self.print_info("\n".join(lines),
@@ -1675,6 +1709,28 @@ class UI:
                 tasks, context=self.agent.scout_context(),
                 read_only=self.agent.autonomy <= 1)
             self.console.print(Text(self.agent.team.format(reports),
+                                    style=C["fg"]))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _cmd_squad(self, arg: str) -> None:
+        """Launch the 8-specialist squad — eight advanced experts
+        (planner, architect, debugger, optimizer, refactorer, integrator,
+        documenter, devops) working the same project goal in parallel."""
+        goal = arg.strip()
+        if not goal:
+            self.print_error("usage: /squad <project-level goal>  — e.g. "
+                             "/squad overhaul the API layer and ship v2")
+            return
+        self.print_info("⚡ launching the 8-specialist squad (planner, "
+                        "architect, debugger, optimizer, refactorer, "
+                        "integrator, documenter, devops)…", C["pink"])
+
+        def run():
+            squad_run = self.agent.squad.run(
+                goal, context=self.agent.scout_context(),
+                read_only=self.agent.autonomy <= 1)
+            self.console.print(Text(self.agent.squad.format(squad_run),
                                     style=C["fg"]))
 
         threading.Thread(target=run, daemon=True).start()
@@ -2350,7 +2406,7 @@ class UI:
             row("/impact", "code blast-radius analysis (Nexus)"),
             row("/forge", "environment digest + drift"),
             row("/oracle", "post-run analysis + calibration"),
-            row("/budget", "budget governor status"),
+            row("/budget [steps N|usd X|reset]", "budget governor status/extend"),
             row("/constitution", "standing rules (human-owned)"),
             row("/replay", "replay the session log as a film"),
             row("/memory", "episodes + dead-end ledger"),

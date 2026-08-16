@@ -48,7 +48,7 @@ from .team import (ROLES, DEFAULT_ROLE, MAX_WORKER_STEPS, _WRITE_LOCK,
 from .tools import Tool, build_registry, parse_tool_arguments
 
 MAX_AGENTS = 8             # concurrent crew slots
-MAX_SEND_STEPS = 10        # tool-loop budget per follow-up message
+MAX_SEND_STEPS = 40        # tool-loop budget per follow-up message
 WAIT_POLL_SECONDS = 0.05   # wait() polling granularity
 
 # Codex-flavoured callsigns for the crew roster.
@@ -59,7 +59,10 @@ _CALLSIGNS = ("nova", "atlas", "echo", "lyra", "orion", "vega", "iris",
 AGENT_STATES = ("running", "done", "blocked", "error", "closed")
 
 _ROLE_ICON = {"researcher": "🔎", "coder": "👨‍💻", "tester": "🧪",
-              "reviewer": "🧐", "analyst": "📊"}
+              "reviewer": "🧐", "analyst": "📊", "architect": "🏛️",
+              "debugger": "🐞", "optimizer": "⚡", "refactorer": "🧹",
+              "documenter": "📝", "devops": "🛠️", "integrator": "🔗",
+              "planner": "🗺️"}
 
 
 @dataclass
@@ -350,14 +353,16 @@ class Crew:
             tools = {n: t for n, t in tools.items()
                      if n not in ("write_file", "edit_file",
                                   "create_directory", "run_command")}
-        schemas = ([t.openai_schema() for t in tools.values()]
-                   if self.model.supports_tools else None)
-        # gentle launch de-sync: parallel spawns never burst the API at t=0
-        time.sleep(random.uniform(0.0, 0.4))
-        # per-agent model override resolves its own provider
+        # per-agent model override resolves its own provider (schemas must
+        # follow the model that will actually serve this agent, not the
+        # crew default — tool support differs between models)
         model = (model_by_id(agent.model_id) if agent.model_id
                  else None) or self.model
         provider = PROVIDERS.get(model.provider, self.provider)
+        schemas = ([t.openai_schema() for t in tools.values()]
+                   if model.supports_tools else None)
+        # gentle launch de-sync: parallel spawns never burst the API at t=0
+        time.sleep(random.uniform(0.0, 0.4))
         result = None
         try:
             for step in range(max_steps):

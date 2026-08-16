@@ -140,6 +140,8 @@ class State:
     autonomy: int = 3
     swarm_reports: list[dict] = field(default_factory=list)
     team_reports: list[dict] = field(default_factory=list)
+    # squad — 8-specialist parallel runs, newest last
+    squad_reports: list[dict] = field(default_factory=list)
     verdicts: list[dict] = field(default_factory=list)
     # §8.3 / §9 — snapshot store references, newest last
     snapshots: list[dict] = field(default_factory=list)
@@ -447,11 +449,18 @@ _MUTATING_TOOLS = {"write_file", "edit_file", "create_directory",
 
 
 def fold(log: EventLog, branch: str | None = None,
-         upto_seq: int | None = None) -> State:
-    """Pure fold: reduce a log prefix into a State projection."""
+         upto_seq: int | None = None,
+         from_seq: int = -1) -> State:
+    """Pure fold: reduce a log prefix into a State projection.
+
+    from_seq skips every event with seq <= from_seq — used for
+    session-scoped projections (budget spend etc.) without mutating
+    or copying the log."""
     br = branch or log.branch
     st = State(branch=br)
     for ev in log.events(br, upto_seq):
+        if ev.seq <= from_seq:
+            continue
         st.head_seq = ev.seq
         d = ev.data
         t = ev.type
@@ -493,6 +502,8 @@ def fold(log: EventLog, branch: str | None = None,
             st.swarm_reports.append(d)
         elif t == "team.report":
             st.team_reports.append(d)
+        elif t == "squad.report":
+            st.squad_reports.append(d)
         elif t == "prompt.sealed":
             st.prompt_sealed.append(d)
         elif t == "prompt.dispatch":

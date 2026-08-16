@@ -197,8 +197,12 @@ class MutationTester:
         self.timeout = timeout
 
     def _run_suite(self) -> tuple[int, str]:
+        from .judge import resolve_shell
+        argv = resolve_shell()
+        if argv is None:
+            return 127, "no POSIX shell available"
         try:
-            proc = subprocess.run(["bash", "-lc", self.suite_command],
+            proc = subprocess.run(argv + [self.suite_command],
                                   capture_output=True, text=True,
                                   timeout=self.timeout)
             out = (proc.stdout or "") + (proc.stderr or "")

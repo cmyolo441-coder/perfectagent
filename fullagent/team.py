@@ -28,9 +28,9 @@ from .kernel import EventLog, fold
 from .tools import Tool, build_registry, parse_tool_arguments
 
 MAX_WORKERS = 8            # hard ceiling on parallel workers
-MAX_WORKER_STEPS = 14      # tool-loop budget per worker
+MAX_WORKER_STEPS = 96      # tool-loop budget per worker (big-project grade)
 MAX_SUMMARY_CHARS = 1800
-RATE_LIMIT_RETRIES = 6     # retries when the provider rate-limits a worker
+RATE_LIMIT_RETRIES = 8     # retries when the provider rate-limits a worker
 RATE_LIMIT_BASE_WAIT = 2.0  # seconds; doubles each retry (+ jitter)
 STAGGER_SECONDS = 0.6      # launch wave: worker i starts ~i*0.6s in, so 8
                            # workers never hit the API in one instant burst
@@ -68,6 +68,51 @@ ROLES: dict[str, dict] = {
     "analyst": {
         "tools": ("read_file", "list_dir", "file_info", "search_files",
                   "glob_files", "web_search", "web_fetch", "run_command"),
+        "writes": False,
+    },
+    # -- advanced specialists (big-project grade) --------------------------
+    "architect": {
+        "tools": ("read_file", "list_dir", "file_info", "search_files",
+                  "glob_files", "write_file", "create_directory"),
+        "writes": True,
+    },
+    "debugger": {
+        "tools": ("read_file", "list_dir", "file_info", "search_files",
+                  "glob_files", "run_command"),
+        "writes": False,
+    },
+    "optimizer": {
+        "tools": ("read_file", "list_dir", "file_info", "search_files",
+                  "glob_files", "run_command"),
+        "writes": False,
+    },
+    "refactorer": {
+        "tools": ("read_file", "list_dir", "file_info", "search_files",
+                  "glob_files", "write_file", "edit_file",
+                  "create_directory"),
+        "writes": True,
+    },
+    "documenter": {
+        "tools": ("read_file", "list_dir", "file_info", "search_files",
+                  "glob_files", "write_file", "edit_file",
+                  "create_directory"),
+        "writes": True,
+    },
+    "devops": {
+        "tools": ("read_file", "list_dir", "file_info", "search_files",
+                  "glob_files", "write_file", "edit_file",
+                  "create_directory", "run_command"),
+        "writes": True,
+    },
+    "integrator": {
+        "tools": ("read_file", "list_dir", "file_info", "search_files",
+                  "glob_files", "write_file", "edit_file",
+                  "create_directory", "run_command"),
+        "writes": True,
+    },
+    "planner": {
+        "tools": ("read_file", "list_dir", "file_info", "search_files",
+                  "glob_files"),
         "writes": False,
     },
 }

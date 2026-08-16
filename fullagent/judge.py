@@ -25,7 +25,9 @@ from __future__ import annotations
 import ast
 import functools
 import hashlib
+import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -57,6 +59,64 @@ class Verdict:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+_SHELL_CACHE: list[str] | None = None
+
+
+def resolve_shell() -> list[str] | None:
+    """Resolve a working POSIX shell, once, for predicate commands.
+
+    On Windows, System32\\bash.exe is the WSL stub — it fails with 'no
+    installed distributions' when WSL has no distro, silently breaking
+    every shell predicate. Candidates (Git Bash first, then PATH bash/sh)
+    are probed with a real `exit 0`; the first that works is cached. On
+    POSIX it's just bash. Returns None when nothing runnable exists."""
+    global _SHELL_CACHE
+    if _SHELL_CACHE is not None:
+        return _SHELL_CACHE or None
+    candidates: list[str] = []
+    if os.name == "nt":
+        git = shutil.which("git")
+        if git:
+            gdir = Path(git).parent.parent
+            for rel in ("bin/bash.exe", "usr/bin/bash.exe",
+                        "bin/sh.exe", "usr/bin/sh.exe"):
+                candidates.append(str(gdir / rel))
+        for name in ("bash.exe", "sh.exe"):
+            found = shutil.which(name)
+            if found:
+                candidates.append(found)
+    else:
+        candidates.append("bash")
+    for cand in candidates:
+        try:
+            probe = subprocess.run([cand, "-c", "exit 0"],
+                                   capture_output=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if probe.returncode == 0:
+            _SHELL_CACHE = [cand, "-lc"]
+            return _SHELL_CACHE
+    _SHELL_CACHE = []
+    return None
+
+
+def _shell_command() -> list[str] | None:
+    """Backwards-compatible alias for resolve_shell()."""
+    return resolve_shell()
+
+
+def _run_shell(command: str, timeout: int):
+    """Run a predicate command in the resolved shell. Returns
+    (returncode, combined_output) or None when no shell is available."""
+    argv = _shell_command()
+    if argv is None:
+        return None
+    proc = subprocess.run(argv + [command], capture_output=True,
+                          text=True, timeout=timeout)
+    output = (proc.stdout or "") + (proc.stderr or "")
+    return proc.returncode, output
+
 
 def _clip(text: str, limit: int = EVIDENCE_LIMIT) -> str:
     """Trim evidence down to a bounded excerpt."""
@@ -109,16 +169,20 @@ def check_exit_code(command: str, expect: int = 0,
         return Verdict(False, "exit_code",
                        f"invalid expected exit code: {expect!r}")
     try:
-        proc = subprocess.run(["bash", "-lc", command], capture_output=True,
-                              text=True, timeout=timeout)
+        ran = _run_shell(command, timeout)
     except subprocess.TimeoutExpired:
         return Verdict(False, "exit_code",
                        f"timed out after {timeout}s: {command}")
     except OSError as e:
         return Verdict(False, "exit_code", f"cannot run command: {e}")
-    passed = proc.returncode == expect
-    detail = f"'{command}' exited {proc.returncode}, expected {expect}"
-    evidence = _clip((proc.stdout or "") + (proc.stderr or ""))
+    if ran is None:
+        return Verdict(False, "exit_code",
+                       "no POSIX shell available — install Git Bash "
+                       "(windows) or bash (posix)")
+    rc, output = ran
+    passed = rc == expect
+    detail = f"'{command}' exited {rc}, expected {expect}"
+    evidence = _clip(output)
     return Verdict(passed, "exit_code", detail, evidence)
 
 
@@ -175,20 +239,22 @@ def check_command_output_contains(command: str, text: str,
     """Run command via bash; pass iff text appears in its combined
     stdout+stderr output."""
     try:
-        proc = subprocess.run(["bash", "-lc", command], capture_output=True,
-                              text=True, timeout=timeout)
+        ran = _run_shell(command, timeout)
     except subprocess.TimeoutExpired:
         return Verdict(False, "command_output_contains",
                        f"timed out after {timeout}s: {command}")
     except OSError as e:
         return Verdict(False, "command_output_contains",
                        f"cannot run command: {e}")
-    output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    if ran is None:
+        return Verdict(False, "command_output_contains",
+                       "no POSIX shell available")
+    rc, output = ran
     idx = output.find(text)
     if idx < 0:
         return Verdict(False, "command_output_contains",
                        f"{text!r} not in output of '{command}' "
-                       f"(exit {proc.returncode})", _clip(output))
+                       f"(exit {rc})", _clip(output))
     return Verdict(True, "command_output_contains",
                    f"{text!r} found in output of '{command}'",
                    _clip(_line_around(output, idx)))
@@ -289,14 +355,15 @@ def check_tool_delta(command: str, delta: int = 0,
     """Run a checker (mypy, ruff, …) and pass iff its error-line count is
     <= delta. 'No NEW type errors' = delta 0 against a clean baseline."""
     try:
-        proc = subprocess.run(["bash", "-lc", command], capture_output=True,
-                              text=True, timeout=timeout)
+        ran = _run_shell(command, timeout)
     except subprocess.TimeoutExpired:
         return Verdict(False, "tool_delta",
                        f"timed out after {timeout}s: {command}")
     except OSError as e:
         return Verdict(False, "tool_delta", f"cannot run command: {e}")
-    output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    if ran is None:
+        return Verdict(False, "tool_delta", "no POSIX shell available")
+    rc, output = ran
     # count error-ish lines: "file:line: error" or "file:line:col: E501"
     errors = [ln for ln in output.splitlines()
               if re.search(r":\d+(:\d+)?:\s*(error|E\d{3}|F\d{3})", ln)]
@@ -577,7 +644,9 @@ if __name__ == "__main__":
         json.dumps(f)
 
         # flake detection (§19.3): a command that fails once then passes
-        flake_cmd = f"bash -c 'if [ ! -f {tmp}/flaked ]; then touch {tmp}/flaked; exit 1; fi; exit 0'"
+        # (posix path — backslashes are eaten inside a bash -c string)
+        flake_dir = Path(td).as_posix()
+        flake_cmd = f"bash -c 'if [ ! -f {flake_dir}/flaked ]; then touch {flake_dir}/flaked; exit 1; fi; exit 0'"
         v = judge.check_with_retry(
             {"type": "exit_code", "command": flake_cmd, "expect": 0})
         assert v.passed and v.kind == "flake", v

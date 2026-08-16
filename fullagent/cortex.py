@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 
 from .kernel import EventLog, fold
@@ -132,26 +133,73 @@ class Plan:
 
 @dataclass
 class Budget:
-    max_usd: float = 3.00
-    max_steps: int = 200
-    max_tokens: int = 4_000_000
-    max_files: int = 80
+    """Run budget. Defaults are UNLIMITED on every axis: the run never
+    pauses for spend — the governor machinery stays (events, /budget,
+    per-slice caps when a caller passes explicit numbers), but nothing
+    stops unless a human sets a limit with /budget set."""
+    max_usd: float = math.inf
+    max_steps: int = 1_000_000_000
+    max_tokens: int = 1_000_000_000_000
+    max_files: int = 100_000_000
     slices: dict = field(default_factory=dict)  # subtree -> fraction
 
 
 class BudgetGovernor:
     """Hierarchical budget over the event log. Every check is a fold; every
-    breach is a budget.event that PAUSES the run (never silently kills)."""
+    breach is a budget.event that PAUSES the run (never silently kills).
+
+    Spend is SESSION-SCOPED: the fold starts at the latest session.start,
+    so a fresh session always starts with a fresh budget. Without this the
+    counter accumulates across sessions and, once max_steps is crossed,
+    every future turn is paused forever — even a trivial "hi"."""
 
     def __init__(self, log: EventLog, budget: Budget | None = None) -> None:
         self.log = log
         self.budget = budget or Budget()
+        self.baseline_seq = 0   # reset() anchor: ignore events <= this
+        self._last_reason = ""  # dedupe budget.event spam while paused
+
+    def _session_start(self) -> int:
+        """seq of the latest session.start (0 if none) — where the current
+        session's spend begins."""
+        start = 0
+        for ev in self.log.events():
+            if ev.type == "session.start" and ev.seq > start:
+                start = ev.seq
+        return start
 
     def spend(self) -> dict:
-        st = fold(self.log)
+        st = fold(self.log,
+                  from_seq=max(self.baseline_seq, self._session_start()))
         return {"usd": st.cost_usd, "steps": st.tool_calls,
                 "tokens": st.tokens_in + st.tokens_out,
                 "files": len(st.files_touched)}
+
+    def reset(self) -> None:
+        """Forget the current spend — the budget restarts from now. Sealed
+        as a budget.event so the extension is never invisible."""
+        self.baseline_seq = self.log.head()
+        self._last_reason = ""
+        self.log.append("budget.event",
+                        {"kind": "reset", "spend": {"usd": 0.0, "steps": 0,
+                                                    "tokens": 0, "files": 0}},
+                        actor="human")
+
+    def set_limit(self, axis: str, value) -> str:
+        """Raise/lower one budget axis: steps | usd | tokens | files."""
+        axis = axis.strip().lower()
+        limits = {"steps": ("max_steps", int), "usd": ("max_usd", float),
+                  "tokens": ("max_tokens", int), "files": ("max_files", int)}
+        if axis not in limits:
+            raise ValueError("axis must be one of: "
+                             + ", ".join(sorted(limits)))
+        attr, cast = limits[axis]
+        setattr(self.budget, attr, cast(value))
+        self._last_reason = ""
+        self.log.append("budget.event",
+                        {"kind": "limit", "axis": axis, "value": cast(value)},
+                        actor="human")
+        return f"{axis} budget set to {cast(value)}"
 
     def check(self) -> tuple[bool, str]:
         """Return (ok, reason). A breach on ANY axis pauses the run."""
@@ -169,14 +217,19 @@ class BudgetGovernor:
 
     def enforce(self) -> bool:
         """Check and, on breach, seal a budget.event (pause). Returns True
-        if the run may continue."""
+        if the run may continue. While paused, only the FIRST breach per
+        reason is sealed — no event spam on every loop iteration."""
         ok, reason = self.check()
-        if not ok:
+        if ok:
+            self._last_reason = ""
+            return True
+        if reason != self._last_reason:
+            self._last_reason = reason
             self.log.append("budget.event",
                             {"kind": "exceeded", "reason": reason,
                              "spend": self.spend()},
                             actor="kernel")
-        return ok
+        return False
 
     def slice_for(self, subtree: str) -> float:
         """USD slice for a subtree — a hard cap a sub-agent cannot borrow

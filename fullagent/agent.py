@@ -62,6 +62,7 @@ from .semantic import SemanticMemory
 from .skills import SkillForge
 from .snapshots import SnapshotStore
 from .speculate import Speculator, SPECULATIVE_TOOLS
+from .squad import Squad
 from .swarm import Swarm
 from .taint import StaticAnalyzer
 from .team import Team
@@ -204,6 +205,8 @@ class Agent:
         self.judge = Judge(self.log)
         self.goal = GoalContract(self.log, judge=self.judge)
         self.swarm = Swarm(self.log, self.provider, self.model, self.effort,
+                           mastermind=self.mastermind)
+        self.squad = Squad(self.log, self.provider, self.model, self.effort,
                            mastermind=self.mastermind)
         self.team = Team(self.log, self.provider, self.model, self.effort,
                          mastermind=self.mastermind)
@@ -440,7 +443,8 @@ class Agent:
                     evs = fold(self.log).budget_events
                     reason = evs[-1]["reason"] if evs else "budget exceeded"
                     turn.error = f"PAUSED — {reason}. Extend the budget " \
-                                 f"or stop."
+                                 f"with /budget (e.g. /budget steps 500 " \
+                                 f"or /budget reset) or stop."
                     break
                 on_status("thinking")
                 # keep the context under the window — compact stale turns
@@ -1641,6 +1645,7 @@ class Agent:
         threads — and return compact structured reports."""
         team = self.team
         swarm = self.swarm
+        squad = self.squad
 
         def spawn_subagents(tasks: list, read_only: bool = False) -> str:
             """Run one worker subagent per task, IN PARALLEL (up to 8).
@@ -1700,16 +1705,65 @@ class Agent:
                                   on_progress=_scout_progress)
             return swarm.format(reports)
 
+        def run_squad(goal: str, read_only: bool = False) -> str:
+            """Run ALL EIGHT advanced specialists in parallel on ONE goal.
+
+            The squad is a full engineering org thrown at a milestone:
+            planner, architect, debugger, optimizer, refactorer,
+            integrator, documenter, devops — every one a REAL subagent
+            with its own mandate, tools and context, all running
+            simultaneously on the same project. Reads fan out; writes
+            serialise through one global lock; files touched by more
+            than one writer are flagged for reconciliation. Returns a
+            compact digest of all eight reports."""
+            goal = str(goal or "").strip()
+            if not goal:
+                return "ERROR: goal must be a non-empty string"
+            ro = read_only or self.autonomy <= 1
+            self._push_status("⚡ squad 0/8 · launching specialists…")
+
+            def _squad_progress(finished: int, total: int, report) -> None:
+                icon = "✓" if report.status == "done" else (
+                    "◐" if report.status == "blocked" else "✗")
+                self._push_status(
+                    f"⚡ squad {finished}/{total} · {report.role} {icon}")
+
+            run = squad.run(goal, context=self.scout_context(),
+                            read_only=ro, on_progress=_squad_progress)
+            return squad.format(run)
+
+        self.tools["run_squad"] = Tool(
+            "run_squad",
+            "Launch the 8-SPECIALIST SQUAD — eight advanced experts "
+            "(planner, architect, debugger, optimizer, refactorer, "
+            "integrator, documenter, devops) working the SAME project in "
+            "PARALLEL, each in its own lane. Real model calls, real "
+            "tools, all at once. Use this for BIG multi-faceted jobs: "
+            "'overhaul this project', 'prepare a release', 'fix and "
+            "harden the whole codebase'. Returns every specialist's "
+            "report plus write-conflict warnings. Set read_only=true to "
+            "make the whole squad analysis-only.",
+            {"type": "object", "properties": {
+                "goal": {"type": "string",
+                         "description": "the project-level goal all "
+                                        "eight specialists attack"},
+                "read_only": {"type": "boolean"}},
+                "required": ["goal"]},
+            run_squad)
+
         self.tools["spawn_subagents"] = Tool(
             "spawn_subagents",
             "Spawn REAL parallel worker subagents (up to 8 at once) to do "
             "independent parts of the job simultaneously. Each task is "
-            '{"task": "<what to do>", "role": "coder|researcher|tester|'
-            'reviewer|analyst"}. Workers really run — real model calls, '
-            "real tools, in parallel — and return compact reports. Use "
-            "this whenever a request splits into independent subtasks "
-            "(e.g. 'build X, test Y, document Z'). Set read_only=true to "
-            "forbid writes.",
+            '{"task": "<what to do>", "role": "..."} — roles: coder, '
+            "researcher, tester, reviewer, analyst, architect, debugger, "
+            "optimizer, refactorer, documenter, devops, integrator, "
+            "planner. Workers really run — real model calls, real tools, "
+            "in parallel — and return compact reports. Use this whenever "
+            "a request splits into independent subtasks (e.g. 'build X, "
+            "test Y, document Z'). For a whole-project goal prefer "
+            "run_squad (all 8 advanced specialists at once). Set "
+            "read_only=true to forbid writes.",
             {"type": "object", "properties": {
                 "tasks": {"type": "array", "items": {"type": "object"},
                           "description": 'list of {"task","role"} objects'},

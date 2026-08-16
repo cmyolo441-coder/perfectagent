@@ -244,10 +244,19 @@ def glob_files(pattern: str, path: str = ".") -> str:
 # ---------------------------------------------------------------------------
 
 def run_command(command: str, timeout: int = 120) -> str:
-    """Run a shell command via bash and return exit code + output."""
+    """Run a shell command via bash and return exit code + output.
+
+    The shell is resolved once (judge.resolve_shell): on Windows,
+    System32\\bash.exe is the WSL stub and fails when no distro is
+    installed, so Git Bash is probed and preferred."""
+    from .judge import resolve_shell
+    argv = resolve_shell()
+    if argv is None:
+        return ("ERROR: no POSIX shell available — install Git Bash "
+                "(windows) or bash (posix)")
     try:
         proc = subprocess.run(
-            ["bash", "-lc", command],
+            argv + [command],
             capture_output=True, text=True, timeout=timeout,
             cwd=os.getcwd(),
         )

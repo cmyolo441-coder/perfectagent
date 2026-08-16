@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import random
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import Callable
 
 from . import systemprompt
 from .client import APIError, chat_blocking, shrink_tool_outputs
@@ -25,11 +27,11 @@ from .tools import Tool, build_registry, parse_tool_arguments
 
 # Scout answers stay small (~400 tokens); clip anything larger.
 MAX_ANSWER_CHARS = 1600
-# A scout may take at most this many read-only tool steps before it must
+# A scout may take this many read-only tool steps before it must
 # answer with what it has.
-MAX_SCOUT_TOOL_STEPS = 6
+MAX_SCOUT_TOOL_STEPS = 12
 # Rate-limit retry: parallel scouts on a free-tier API must wait, not die.
-RATE_LIMIT_RETRIES = 5
+RATE_LIMIT_RETRIES = 8
 RATE_LIMIT_BASE_WAIT = 2.0
 # The ONLY tools a scout may ever call. Reads fan out; writes serialise —
 # and a scout simply has no write path at all.
@@ -98,18 +100,40 @@ class Swarm:
         }
 
     def scout(self, questions: list[str], context: str = "",
-              timeout: float = 120.0) -> list[ScoutReport]:
+              timeout: float = 120.0, on_progress=None
+              ) -> list[ScoutReport]:
         """Run one read-only scout per question, in parallel; return the
-        reports in input order and append one 'swarm.report' event each."""
+        reports in input order and append one 'swarm.report' event each.
+
+        on_progress(finished, total, report) fires as each scout lands
+        (live status for the UI); it is a courtesy and never a crash
+        path."""
         if not questions:
             return []
 
+        total = len(questions)
+        done_counter = {"n": 0}
+        counter_lock = threading.Lock()
+
+        def _announce(report: ScoutReport) -> None:
+            if on_progress is None:
+                return
+            with counter_lock:
+                done_counter["n"] += 1
+                finished = done_counter["n"]
+            try:
+                on_progress(finished, total, report)
+            except Exception:
+                pass
+
         def _safe(question: str) -> ScoutReport:
             try:
-                return self._run_one(question, context, timeout)
+                report = self._run_one(question, context, timeout)
             except Exception as e:  # a failing scout must not kill the swarm
-                return ScoutReport(question=question, answer="",
-                                   confidence=0.0, ok=False, error=str(e))
+                report = ScoutReport(question=question, answer="",
+                                     confidence=0.0, ok=False, error=str(e))
+            _announce(report)
+            return report
 
         workers = min(len(questions), self.max_parallel)
         with ThreadPoolExecutor(max_workers=workers) as ex:
