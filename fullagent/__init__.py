@@ -13,6 +13,10 @@ Package layout:
     judge.py        deterministic verification (no LLM judging)
     swarm.py        parallel read-only scout sub-agents
     team.py         parallel worker team (up to 8, real tools, write lock)
+    crew.py         persistent Codex-style subagents (spawn/send/wait/
+                    close/resume) — background lifecycle, living context
+    workflows.py    saved multi-step pipelines — phased orchestration
+    report.py       enterprise audit export (md/html) + forecasting
     autopilot.py    self-routing brain: auto-enables team / goal / web
 
     v3 advanced subsystems (all event-sourced on the same kernel):
@@ -36,4 +40,4 @@ Package layout:
     __main__.py     entry point
 """
 
-__version__ = "1.5.0"
+__version__ = "1.8.0"

@@ -226,6 +226,14 @@ SLASH_COMMANDS = [
     ("/effort", "low · medium · high · extrahigh · ultrahigh"),
     ("/goal", "goal contract — set · prove · close · status · waive · clear"),
     ("/autonomy", "autonomy level 0-5 (observer → autonomous)"),
+    ("/focus", "deep-work mode — /focus <1-20> auto-continues until done"),
+    ("/render", "toggle rendered-markdown replies — /render [on|off]"),
+    ("/workflow", "saved pipelines — /workflow [list|run <name>|delete <name>]"),
+    ("/export", "enterprise audit report — /export [md|html]"),
+    ("/forecast", "projection from measured velocity + usage"),
+    ("/health", "provider health — model errors + failovers"),
+    ("/notify", "event notifications — /notify <url|file:path|off>"),
+    ("/resume", "resume a previous session — /resume [branch]"),
     ("/state", "live projection of the event log (cost, goal, dead-ends)"),
     ("/rewind", "rewind timeline + files to a seq — /rewind <seq>"),
     ("/revert", "revert FILES only to a seq (agent keeps memory)"),
@@ -242,6 +250,7 @@ SLASH_COMMANDS = [
     ("/judge", "deterministic check — /judge <type> <json-or-args>"),
     ("/scout", "fan out read-only scouts — /scout q1 | q2 | q3"),
     ("/team", "parallel worker team (up to 8) — /team task1 | task2 | …"),
+    ("/crew", "persistent subagents — /crew [spawn|send|wait|close|resume|status]"),
     ("/auto", "autopilot self-routing — /auto [on|off|status]"),
     ("/prompt", "system prompt — /prompt [main|master|list]"),
     ("/mastermind", "prompt coherence ledger — sealed prompts, gate, lineage"),
@@ -434,6 +443,13 @@ class UI:
         self._goal_cache = None
         self._goal_cache_ts = 0.0
 
+        # focus mode (deep work): remaining auto-continuation turns
+        self._focus_remaining = 0
+
+        # live context-usage cache for the border (est. tokens / window)
+        self._ctx_cache: int | None = None
+        self._ctx_cache_ts = 0.0
+
         self._build()
 
     # -- small helpers ---------------------------------------------------------
@@ -507,6 +523,25 @@ class UI:
         if goal.active:
             segs.append((f" goal: {(1 - goal.distance) * 100:.0f}% ",
                          "class:box.status"))
+        if self._focus_remaining > 0:
+            segs.append((f" 🎯 focus×{self._focus_remaining} ",
+                         "class:box.flash"))
+        # live context usage — cached 1s (the border redraws every frame)
+        if self._ctx_cache is None or now - self._ctx_cache_ts > 1.0:
+            try:
+                from .client import estimate_tokens
+                used = estimate_tokens(self.agent.messages,
+                                       self.agent.model.id)
+                window = max(1, self.agent.model.context_window)
+                self._ctx_cache = min(100, int(used * 100 / window))
+            except Exception:
+                self._ctx_cache = 0
+            self._ctx_cache_ts = now
+        ctx_color = (C["green"] if self._ctx_cache < 60
+                     else C["yellow"] if self._ctx_cache < 85
+                     else C["red"])
+        segs.append((f" ctx {self._ctx_cache}% ",
+                     f"bold {ctx_color}"))
         segs.append((f" session: {self.agent.session_id} ", "class:box.session"))
 
         # fixed = corners (2) + first dash (1) + "──" before each later seg
@@ -915,6 +950,22 @@ class UI:
             self._cmd_goal(arg)
         elif cmd == "/autonomy":
             self._cmd_autonomy(arg)
+        elif cmd == "/focus":
+            self._cmd_focus(arg)
+        elif cmd == "/render":
+            self._cmd_render(arg)
+        elif cmd == "/workflow":
+            self._cmd_workflow(arg)
+        elif cmd == "/export":
+            self._cmd_export(arg)
+        elif cmd == "/forecast":
+            self.print_info(self.agent.get_forecast(), C["cyan"])
+        elif cmd == "/health":
+            self._cmd_health()
+        elif cmd == "/notify":
+            self._cmd_notify(arg)
+        elif cmd == "/resume":
+            self._cmd_resume(arg)
         elif cmd == "/state":
             self._cmd_state()
         elif cmd == "/rewind":
@@ -949,6 +1000,8 @@ class UI:
             self._cmd_scout(arg)
         elif cmd == "/team":
             self._cmd_team(arg)
+        elif cmd == "/crew":
+            self._cmd_crew(arg)
         elif cmd == "/auto":
             self._cmd_auto(arg)
         elif cmd == "/prompt":
@@ -1170,6 +1223,153 @@ class UI:
         desc = self.agent.set_autonomy(level)
         self.print_info(f"✓ autonomy → L{self.agent.autonomy} — {desc}",
                         C["green"])
+
+    def _cmd_focus(self, arg: str) -> None:
+        """FOCUS MODE (deep work): arms auto-continuation. After each turn
+        the kernel decides — mechanically — whether work remains, and the
+        UI submits the next continuation turn automatically, until the
+        goal closes, the agent stalls, the budget pauses, or N turns land.
+        """
+        arg = arg.strip().lower()
+        if arg in ("", "status"):
+            state = (f"ARMED — {self._focus_remaining} auto-turn(s) left"
+                     if self._focus_remaining > 0 else "off")
+            self.print_info(f"🎯 focus mode: {state}\n"
+                            "  /focus <1-20>  arm, then send your task\n"
+                            "  /focus off     disarm", C["cyan"])
+            return
+        if arg == "off":
+            self._focus_remaining = 0
+            self.print_info("🎯 focus disarmed", C["yellow"])
+            return
+        try:
+            n = max(1, min(int(arg), 20))
+        except ValueError:
+            self.print_error("usage: /focus <1-20> | /focus off")
+            return
+        self._focus_remaining = n
+        self.agent._focus_history.clear()
+        goal = self.agent.goal.status()
+        hint = ("an active goal drives continuation — focus stops when "
+                "every clause is proven or progress stalls"
+                if goal.active else
+                "no active goal — focus stops when the agent answers "
+                "without further tool work")
+        self.print_info(f"🎯 focus armed: up to {n} auto-turns. {hint}. "
+                        f"Send your task now.", C["green"])
+
+    def _cmd_render(self, arg: str) -> None:
+        """Toggle rendered-markdown replies: streaming stays in the border
+        preview, the finished reply prints as rich Markdown."""
+        arg = arg.strip().lower()
+        current = bool(self.cfg.extra.get("render_markdown", False))
+        if arg in ("on", "off"):
+            new_state = arg == "on"
+        elif arg == "":
+            new_state = not current
+        else:
+            self.print_error("usage: /render [on|off]")
+            return
+        self.cfg.extra["render_markdown"] = new_state
+        self.cfg.save()
+        self.print_info(f"✓ markdown rendering → "
+                        f"{'ON (replies render as rich Markdown)' if new_state else 'OFF (raw streaming)'}",
+                        C["green"])
+
+    def _cmd_workflow(self, arg: str) -> None:
+        """Saved enterprise pipelines: /workflow [list|run|delete]."""
+        from .workflows import WorkflowError
+        wf = self.agent.workflows
+        parts = arg.split(None, 1)
+        sub = parts[0].lower() if parts else "list"
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        if sub in ("", "list"):
+            self.print_info(wf.format_list(), C["cyan"])
+            return
+        if sub == "run":
+            if not rest:
+                self.print_error("usage: /workflow run <name>")
+                return
+            self.print_info(f"⚙ running workflow {rest!r} …", C["dim"])
+            try:
+                report = wf.run(rest)
+            except WorkflowError as e:
+                self.print_error(str(e))
+                return
+            color = C["green"] if report["state"] == "DONE" else C["red"]
+            self.print_info(wf.format_report(report), color)
+            return
+        if sub == "delete":
+            if wf.delete(rest):
+                self.print_info(f"✓ workflow {rest!r} deleted", C["yellow"])
+            else:
+                self.print_error(f"no such workflow: {rest!r}")
+            return
+        self.print_error("workflow subcommands: list · run <name> · "
+                         "delete <name>")
+
+    def _cmd_export(self, arg: str) -> None:
+        fmt = arg.strip().lower()
+        if fmt not in ("", "md", "markdown", "html"):
+            self.print_error("usage: /export [md|html]")
+            return
+        fmt = "html" if fmt == "html" else "md"
+        try:
+            path = self.agent.export_report(fmt)
+        except OSError as e:
+            self.print_error(f"cannot write report: {e}")
+            return
+        self.print_info(f"✓ audit report exported → {path}", C["green"])
+
+    def _cmd_health(self) -> None:
+        h = self.agent.health
+        lines = ["PROVIDER HEALTH"]
+        lines.append(f"  failovers this session : {h['failovers']}")
+        if h["model_errors"]:
+            for m, n in sorted(h["model_errors"].items()):
+                lines.append(f"  model errors           : {m} × {n}")
+        else:
+            lines.append("  model errors           : none")
+        fb = str(self.cfg.extra.get("failover_model", "") or "")
+        lines.append(f"  failover target        : "
+                     f"{fb or 'auto (same provider first)'}")
+        lines.append("  set explicit target    : edit config.json -> "
+                     "\"failover_model\"")
+        self.print_info("\n".join(lines), C["cyan"])
+
+    def _cmd_notify(self, arg: str) -> None:
+        try:
+            state = self.agent.notifier.configure(arg)
+        except ValueError as e:
+            self.print_error(str(e))
+            return
+        self.print_info(f"✓ notifications → {state}", C["green"])
+
+    def _cmd_resume(self, arg: str) -> None:
+        branch = arg.strip()
+        catalog = self.agent.sessions_catalog()
+        if not branch:
+            if not catalog:
+                self.print_info("no sessions found", C["dim"])
+                return
+            lines = ["SESSIONS — /resume <branch> to continue one:"]
+            import time as _time
+            for c in catalog[:12]:
+                stamp = (_time.strftime("%m-%d %H:%M",
+                                        _time.localtime(c["started"]))
+                         if c["started"] else "?")
+                lines.append(f"  ◆ {c['branch']:<14} session "
+                             f"{c['session_id'] or '?'} · "
+                             f"{c['events']} events · {stamp}")
+            self.print_info("\n".join(lines), C["cyan"])
+            return
+        try:
+            n = self.agent.resume_session(branch)
+        except ValueError as e:
+            self.print_error(str(e))
+            return
+        self.print_info(f"✓ resumed branch {branch!r} — {n} message(s) "
+                        f"restored from the event log", C["green"])
 
     def _cmd_state(self) -> None:
         st = self.agent.state()
@@ -1601,6 +1801,119 @@ class UI:
             return
         self.print_error("usage: /mission [start|tick|list|abandon] …")
 
+    def _cmd_crew(self, arg: str) -> None:
+        """Persistent Codex-style subagents:
+        /crew                             roster + states
+        /crew spawn <role> <task>         launch a background subagent
+        /crew send <id> <message>         follow-up into its context
+        /crew wait [id,…]                 collect results (blocking)
+        /crew close <id> · /crew resume <id>"""
+        from .crew import CrewError
+        crew = self.agent.crew
+        parts = arg.split(None, 1)
+        sub = parts[0].lower() if parts else "status"
+        rest = parts[1].strip() if len(parts) > 1 else ""
+
+        if sub in ("", "status", "list"):
+            self.print_info(crew.format_status(), C["cyan"])
+            return
+        if sub == "spawn":
+            rparts = rest.split(None, 1)
+            if len(rparts) < 2:
+                self.print_error("usage: /crew spawn <role> <task>  "
+                                 "(roles: coder researcher tester "
+                                 "reviewer analyst)")
+                return
+            role, task = rparts[0], rparts[1]
+            try:
+                agent = crew.spawn(task, role=role,
+                                   context=self.agent.scout_context(),
+                                   read_only=self.agent.autonomy <= 1)
+            except CrewError as e:
+                self.print_error(str(e))
+                return
+            self.print_info(f"⚡ subagent [{agent.id}] '{agent.nickname}' "
+                            f"({agent.role}) launched in background — "
+                            f"/crew wait collects it", C["green"])
+            return
+        if sub == "send":
+            sparts = rest.split(None, 1)
+            if len(sparts) < 2:
+                self.print_error("usage: /crew send <id> <message>")
+                return
+            try:
+                agent = crew.send(sparts[0], sparts[1])
+            except CrewError as e:
+                self.print_error(str(e))
+                return
+            self.print_info(f"✓ message → [{agent.id}] '{agent.nickname}' "
+                            f"(state: {agent.state})", C["green"])
+            return
+        if sub == "wait":
+            ids = [s.strip() for s in rest.split(",") if s.strip()] or None
+            self.print_info("⏳ waiting for subagents…", C["dim"])
+            try:
+                states = crew.wait(ids, timeout=300.0)
+            except CrewError as e:
+                self.print_error(str(e))
+                return
+            self.print_info(f"states: {states}", C["cyan"])
+            self.console.print(self._crew_panel(
+                [crew.get(i) for i in states if crew.get(i)]))
+            return
+        if sub == "close":
+            try:
+                agent = crew.close(rest)
+            except CrewError as e:
+                self.print_error(str(e))
+                return
+            self.print_info(f"✓ [{agent.id}] '{agent.nickname}' closed",
+                            C["yellow"])
+            return
+        if sub == "resume":
+            try:
+                agent = crew.resume(rest)
+            except CrewError as e:
+                self.print_error(str(e))
+                return
+            self.print_info(f"✓ [{agent.id}] '{agent.nickname}' resumed "
+                            f"({agent.state})", C["green"])
+            return
+        self.print_error("crew subcommands: spawn · send · wait · close · "
+                         "resume · status")
+
+    def _crew_panel(self, agents) -> Panel:
+        """A rich panel rendering the crew's reports — role icons, status
+        glyphs, files touched, summaries."""
+        body = Text()
+        icons = {"done": ("✓", C["green"]), "blocked": ("◐", C["yellow"]),
+                 "error": ("✗", C["red"]), "closed": ("⊘", C["dim"]),
+                 "running": ("…", C["cyan"])}
+        role_icons = {"researcher": "🔎", "coder": "👨‍💻", "tester": "🧪",
+                      "reviewer": "🧐", "analyst": "📊"}
+        for a in agents:
+            glyph, color = icons.get(a.state, ("?", C["dim"]))
+            body.append(f"{role_icons.get(a.role, '◆')} ", style=color)
+            body.append(f"[{a.id}] {a.nickname}", style=f"bold {C['fg']}")
+            body.append(f" ({a.role}) ", style=C["dim"])
+            body.append(f"{glyph} {a.state}", style=f"bold {color}")
+            body.append(f"  ·  {a.tool_calls} tools · "
+                        f"{a.elapsed_ms / 1000:.1f}s\n", style=C["dim"])
+            body.append(f"  task: {a.task[:160]}\n", style=C["dim"])
+            if a.files_touched:
+                body.append("  files: ", style=C["dim"])
+                body.append(", ".join(a.files_touched[:8]) + "\n",
+                            style=C["cyan"])
+            if a.error:
+                body.append(f"  error: {a.error[:200]}\n", style=C["red"])
+            if a.summary:
+                body.append("  " + a.summary.replace("\n", "\n  ")[:900]
+                            + "\n", style=C["fg"])
+            body.append("\n")
+        return Panel(body, title=f"⚡ CREW — {len(agents)} subagent(s)",
+                     border_style=C["accent"], expand=False,
+                     padding=(0, 1))
+
     def _cmd_council(self, arg: str) -> None:
         """Convene an adversarial debate: /council <proposition>."""
         question = arg.strip()
@@ -1733,9 +2046,24 @@ class UI:
         self._start_spinner()
         streamed = {"n": 0}
         stream_buf: list[str] = []
+        render_md = bool(self.cfg.extra.get("render_markdown", False))
+        md_buf: list[str] = []
 
         def on_token(piece: str):
             streamed["n"] += len(piece)
+            if render_md:
+                # markdown mode: nothing raw hits the console — the live
+                # preview runs in the box border, the finished reply is
+                # printed once, rendered as rich Markdown.
+                with self._stream_lock:
+                    md_buf.append(piece)
+                    joined = "".join(md_buf)
+                maxw = self._width() - 26
+                preview = joined.strip("\n")
+                if len(preview) > maxw:
+                    preview = preview[-maxw:]
+                self._set_status(preview if preview else "writing…")
+                return
             # patch_stdout can only interleave output safely when every
             # write ends in a newline, so emit complete lines here and keep
             # the partial line as a live preview inside the box border.
@@ -1766,7 +2094,12 @@ class UI:
             self._set_status(f"running {ev.name}…")
 
         def on_tool_update(ev: ToolEvent):
-            self.console.print(self._tool_result_line(ev))
+            if ev.name in ("spawn_subagents", "spawn_scouts",
+                           "wait_for_agents") and ev.status == "done":
+                # subagent reports deserve a real panel, not one line
+                self.console.print(self._subagent_panel(ev))
+            else:
+                self.console.print(self._tool_result_line(ev))
             self._set_status("thinking…")
 
         def on_status(s: str):
@@ -1810,6 +2143,11 @@ class UI:
             self._invalidate()
 
         if turn is not None:
+            if render_md and turn.assistant_text.strip() and not turn.error:
+                # the finished reply, rendered once as rich Markdown
+                self.console.print()
+                self.console.print(Markdown(turn.assistant_text),
+                                   soft_wrap=True)
             if turn.reasoning and self.cfg.show_reasoning:
                 self.print_reasoning(turn.reasoning)
             if turn.error:
@@ -1819,6 +2157,32 @@ class UI:
                     self.print_error(turn.error)
             self._print_turn_stats(turn)
             self.agent.save_session()
+
+            # FOCUS MODE — the kernel decides whether work remains; the
+            # UI drives the next continuation turn automatically.
+            if (self._focus_remaining > 0
+                    and not self._cancel_flag.is_set()):
+                cont = self.agent.focus_continue(turn,
+                                                 self._focus_remaining)
+                if cont is None:
+                    stops = [e for e in self.agent.log.events()
+                             if e.type == "focus.stop"]
+                    reason = (stops[-1].data.get("reason", "complete")
+                              if stops else "complete")
+                    self._focus_remaining = 0
+                    self._invalidate()
+                    self.print_info(f"🎯 focus ended — {reason}",
+                                    C["yellow"])
+                else:
+                    self._focus_remaining -= 1
+                    self._invalidate()
+                    self.print_info(
+                        f"🎯 focus · auto-continuing "
+                        f"({self._focus_remaining} turn(s) left)…",
+                        C["pink"])
+                    self._emit_user("CONTINUE (focus mode)")
+                    self._run_turn_thread(cont)
+                    return
 
     def _print_turn_stats(self, turn) -> None:
         parts = [f"{turn.duration:.1f}s"]
@@ -1853,8 +2217,11 @@ class UI:
         self._approve_result = False
         self._approve_request = (tool, args, done)
         self._invalidate()
-        # show what is being approved above the box
+        # show what is being approved above the box — with a real diff
         self.console.print(self._approval_line(tool, args))
+        preview = self._diff_preview(tool, args)
+        if preview is not None:
+            self.console.print(preview)
         done.wait()
         self._approve_request = None
         self._invalidate()
@@ -1870,6 +2237,43 @@ class UI:
             answer = "y"
         self._approve_result = answer == "y"
         self._approve_request[2].set()
+
+    def _diff_preview(self, tool: Tool, args: dict):
+        """Real preview of what the mutation will do — unified diff for
+        edit_file, overwrite warning for write_file. None = no preview."""
+        if tool.name == "write_file":
+            p = Path(str(args.get("path", ""))).expanduser()
+            if p.exists() and p.is_file():
+                return Text(f"  ⚠ overwrites existing file "
+                            f"({p.stat().st_size:,} bytes)",
+                            style=C["yellow"])
+            return None
+        if tool.name != "edit_file":
+            return None
+        path = Path(str(args.get("path", ""))).expanduser()
+        old_s = str(args.get("old_string", ""))
+        new_s = str(args.get("new_string", ""))
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            return Text(f"  ⚠ file not readable: {path}", style=C["red"])
+        if old_s and old_s not in text:
+            return Text("  ⚠ old_string NOT FOUND in file — this edit "
+                        "will fail", style=C["red"])
+        import difflib
+        t = Text()
+        lines = list(difflib.unified_diff(
+            old_s.splitlines(), new_s.splitlines(),
+            fromfile="before", tofile="after", lineterm="", n=1))
+        for line in lines[:40]:
+            style = (C["green"] if line.startswith("+")
+                     else C["red"] if line.startswith("-")
+                     else C["dim"])
+            t.append(line + "\n", style=style)
+        if len(lines) > 40:
+            t.append(f"  … {len(lines) - 40} more diff line(s)\n",
+                     style=C["dim"])
+        return t if t.plain.strip() else None
 
     def _approval_line(self, tool: Tool, args: dict) -> Text:
         import json as _json
@@ -1995,29 +2399,56 @@ class UI:
                 self.app.run()
             except KeyboardInterrupt:
                 pass
+            except EOFError:
+                # stdin closed (piped/non-interactive) — exit cleanly
+                self.console.print()
+                self.print_info("⊘ no interactive terminal — run fullagent "
+                                "in a real TTY, or use headless commands "
+                                "(python main.py --help)", C["yellow"])
         self.agent.save_session()
 
     def print_banner(self) -> None:
+        from . import __version__
         width = min(shutil.get_terminal_size((100, 24)).columns - 2, 78)
+        model = self._model()
+        effort = self._effort()
+
         logo = Text()
         logo.append("◆ ", style=f"bold {C['accent']}")
         logo.append(APP_NAME, style=f"bold {C['accent']}")
+        logo.append(f" v{__version__}", style=f"bold {C['pink']}")
         logo.append("  ·  advanced terminal AI agent", style=C["dim"])
-        self.console.print(Panel(logo, width=width, border_style=C["border"],
-                                 padding=(0, 1)))
-        model = self._model()
-        effort = self._effort()
+        logo.append("\n")
+        logo.append("event-sourced kernel · goal contracts · parallel crew · "
+                    "self-healing", style=C["dim"])
+        self.console.print(Panel(logo, width=width,
+                                 border_style=C["border"], padding=(0, 1)))
+
         line = Text()
-        line.append(" model ", style=C["dim"])
+        line.append(" ❯ model  ", style=C["dim"])
         line.append(model.label, style=f"bold {C['cyan']}")
-        line.append(f" ({model.id})", style=C["dim"])
-        line.append("   effort ", style=C["dim"])
-        line.append(effort.label, style=f"bold {EFFORT_COLORS[effort.key]}")
-        line.append(f"   session {self.agent.session_id}", style=C["dim"])
+        if model.tag:
+            line.append(f" {model.tag} ", style=f"bold {C['green']}")
+        line.append("   effort  ", style=C["dim"])
+        line.append(effort.label.lower(),
+                    style=f"bold {EFFORT_COLORS[effort.key]}")
+        line.append("   autonomy  ", style=C["dim"])
+        line.append(f"L{self.agent.autonomy}", style=f"bold {C['yellow']}")
+        line.append("   session  ", style=C["dim"])
+        line.append(self.agent.session_id, style=C["fg"])
         self.console.print(line)
-        self.console.print(Text(
-            " type / for commands · Ctrl+T models · Ctrl+E effort",
-            style=C["dim"]))
+
+        hints = Text()
+        hints.append("   ", style=C["dim"])
+        hints.append("/", style=f"bold {C['green']}")
+        hints.append(" commands · ", style=C["dim"])
+        hints.append("Ctrl+T", style=f"bold {C['cyan']}")
+        hints.append(" models · ", style=C["dim"])
+        hints.append("Ctrl+E", style=f"bold {C['cyan']}")
+        hints.append(" effort · ", style=C["dim"])
+        hints.append("/crew", style=f"bold {C['pink']}")
+        hints.append(" parallel subagents", style=C["dim"])
+        self.console.print(hints)
         self.console.print()
 
     def _emit_user(self, text: str) -> None:
@@ -2054,7 +2485,29 @@ class UI:
         t.append(f"  {icon} ", style=color)
         t.append(first_line, style=C["dim"])
         t.append(f"  ({ev.duration:.1f}s)", style=C["dim"])
+        if ev.status == "error":
+            # root-cause hint from the healer taxonomy — instant triage
+            try:
+                from .healer import classify
+                diag = classify(ev.result)
+                if diag.root_cause not in ("unknown", ""):
+                    t.append(f"  ↳ {diag.root_cause}: "
+                             f"{diag.suggestion[:70]}",
+                             style=C["orange"])
+            except Exception:
+                pass
         return t
+
+    def _subagent_panel(self, ev: ToolEvent) -> Panel:
+        """Render a parallel-subagent tool result as a bordered panel."""
+        title = {"spawn_subagents": "⚡ PARALLEL WORKERS",
+                 "spawn_scouts": "⚡ PARALLEL SCOUTS",
+                 "wait_for_agents": "⚡ CREW RESULTS"}.get(ev.name,
+                                                          "⚡ SUBAGENTS")
+        color = C["green"] if ev.status == "done" else C["red"]
+        body = Text(ev.result[:6000], style=C["fg"])
+        return Panel(body, title=title, border_style=color, expand=False,
+                     padding=(0, 1))
 
     def print_reasoning(self, text: str) -> None:
         preview = " ".join(text.strip().split())

@@ -456,6 +456,19 @@ def shrink_tool_outputs(messages: list[dict], keep: int = 1,
     return False
 
 
+def _check_api_key(provider: Provider) -> None:
+    """Fail fast with actionable guidance instead of an opaque 401."""
+    if not provider.api_key:
+        env_name = {"zen": "OPENCODE_API_KEY",
+                    "tokenrouter": "TOKENROUTER_API_KEY",
+                    "agnes": "AGNES_API_KEY"}.get(
+                        provider.key, f"{provider.key.upper()}_API_KEY")
+        raise APIError(
+            f"no API key configured for {provider.name}. Set the "
+            f"{env_name} environment variable (export {env_name}=sk-...) "
+            f"and restart.", status=401)
+
+
 def chat_stream(provider: Provider, model: Model, effort: Effort,
                 messages: list[dict], tools: list[dict] | None,
                 on_token: Callable[[str], None] | None = None,
@@ -477,6 +490,7 @@ def chat_stream(provider: Provider, model: Model, effort: Effort,
          retry with the shrunken messages.
     The payload invariant is re-asserted before every send: the request
     that goes out always satisfies input + max_tokens <= window."""
+    _check_api_key(provider)
     url = provider.base_url.rstrip("/") + "/chat/completions"
     headers = {
         "Authorization": f"Bearer {provider.api_key}",
@@ -673,6 +687,7 @@ def chat_blocking(provider: Provider, model: Model, effort: Effort,
     Carries the same three-layer context-overflow recovery as chat_stream:
     pre-flight clamp, re-clamp-and-retry on rejection, and (when the input
     itself is too big) caller-driven shrink-and-retry via on_overflow."""
+    _check_api_key(provider)
     url = provider.base_url.rstrip("/") + "/chat/completions"
     headers = {
         "Authorization": f"Bearer {provider.api_key}",

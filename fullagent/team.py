@@ -23,7 +23,7 @@ from pathlib import Path
 
 from . import systemprompt
 from .client import APIError, chat_blocking, shrink_tool_outputs
-from .config import Effort, Model, Provider
+from .config import PROVIDERS, Effort, Model, Provider, model_by_id
 from .kernel import EventLog, fold
 from .tools import Tool, build_registry, parse_tool_arguments
 
@@ -98,8 +98,9 @@ class WorkerReport:
         }
 
 
-def _parse_final(text: str) -> tuple[str, str]:
-    """Split the worker's final reply into (status, summary)."""
+def parse_worker_final(text: str) -> tuple[str, str]:
+    """Split a worker's final reply into (status, summary). Shared by
+    the fire-and-collect Team and the persistent Crew."""
     status = "done"
     lines = text.strip().splitlines()
     summary_lines: list[str] = []
@@ -116,6 +117,40 @@ def _parse_final(text: str) -> tuple[str, str]:
     if not summary:  # model ignored the format — keep the whole reply
         summary = text.strip()
     return status, summary
+
+
+def chat_with_retry(provider, model, effort, messages: list[dict],
+                    schemas: list[dict] | None, timeout: float):
+    """chat_blocking with rate-limit retry + exponential backoff.
+
+    Shared by the fire-and-collect Team and the persistent Crew.
+    8 parallel workers on a free-tier API will hit rate limits; a
+    worker must wait and retry, not die. Backoff doubles each attempt
+    with jitter so the workers naturally de-synchronise.
+
+    Also carries context-overflow protection: if a worker's own tool
+    loop bloats its context past the window, the oldest tool results
+    are truncated and the call retried — a worker never dies with a
+    context-length error."""
+    last_err: Exception | None = None
+    for attempt in range(RATE_LIMIT_RETRIES):
+        try:
+            return chat_blocking(provider, model, effort,
+                                 messages, schemas,
+                                 on_overflow=lambda: shrink_tool_outputs(
+                                     messages),
+                                 timeout=timeout)
+        except APIError as e:
+            msg = str(e).lower()
+            rate_limited = (e.status == 429 or "rate limit" in msg
+                            or "too many requests" in msg)
+            if not rate_limited:
+                raise
+            last_err = e
+            wait = RATE_LIMIT_BASE_WAIT * (2 ** attempt) \
+                + random.uniform(0, 1.5)
+            time.sleep(wait)
+    raise last_err  # type: ignore[misc]
 
 
 class Team:
@@ -142,26 +177,44 @@ class Team:
     # -- public API ---------------------------------------------------------
 
     def run(self, tasks: list[dict], context: str = "",
-            timeout: float = 240.0,
-            read_only: bool = False) -> list[WorkerReport]:
+            timeout: float = 240.0, read_only: bool = False,
+            on_progress=None) -> list[WorkerReport]:
         """Run one worker per task IN PARALLEL (max MAX_WORKERS).
 
         Each task is {'task': str, 'role': str?}. With read_only=True no
         worker gets any write tool (the autonomy ladder applied to the
         team). Returns reports in input order and appends one
-        'team.report' event per worker."""
+        'team.report' event per worker. on_progress(finished, total,
+        report) fires as each worker lands (live status for the UI)."""
         tasks = tasks[:MAX_WORKERS]
         if not tasks:
             return []
 
+        total = len(tasks)
+        done_counter = {"n": 0}
+        counter_lock = threading.Lock()
+
+        def _announce(report: WorkerReport) -> None:
+            if on_progress is None:
+                return
+            with counter_lock:
+                done_counter["n"] += 1
+                finished = done_counter["n"]
+            try:
+                on_progress(finished, total, report)
+            except Exception:
+                pass  # progress is a courtesy, never a crash path
+
         def _safe(index: int, task: dict) -> WorkerReport:
             try:
-                return self._run_one(task, context, timeout, read_only,
-                                     stagger_index=index)
+                report = self._run_one(task, context, timeout, read_only,
+                                       stagger_index=index)
             except Exception as e:  # one failing worker never kills the team
-                return WorkerReport(task=task.get("task", ""),
-                                    role=task.get("role", DEFAULT_ROLE),
-                                    status="error", error=str(e))
+                report = WorkerReport(task=task.get("task", ""),
+                                      role=task.get("role", DEFAULT_ROLE),
+                                      status="error", error=str(e))
+            _announce(report)
+            return report
 
         workers = min(len(tasks), MAX_WORKERS)
         with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -198,35 +251,8 @@ class Team:
 
     def _chat(self, messages: list[dict], schemas: list[dict] | None,
               timeout: float):
-        """chat_blocking with rate-limit retry + exponential backoff.
-
-        8 parallel workers on a free-tier API will hit rate limits; a
-        worker must wait and retry, not die. Backoff doubles each attempt
-        with jitter so the workers naturally de-synchronise.
-
-        Also carries context-overflow protection: if a worker's own tool
-        loop bloats its context past the window, the oldest tool results
-        are truncated and the call retried — a worker never dies with a
-        context-length error."""
-        last_err: Exception | None = None
-        for attempt in range(RATE_LIMIT_RETRIES):
-            try:
-                return chat_blocking(self.provider, self.model, self.effort,
-                                     messages, schemas,
-                                     on_overflow=lambda: shrink_tool_outputs(
-                                         messages),
-                                     timeout=timeout)
-            except APIError as e:
-                msg = str(e).lower()
-                rate_limited = (e.status == 429 or "rate limit" in msg
-                                or "too many requests" in msg)
-                if not rate_limited:
-                    raise
-                last_err = e
-                wait = RATE_LIMIT_BASE_WAIT * (2 ** attempt) \
-                    + random.uniform(0, 1.5)
-                time.sleep(wait)
-        raise last_err  # type: ignore[misc]
+        return chat_with_retry(self.provider, self.model, self.effort,
+                               messages, schemas, timeout)
 
     def _run_one(self, task: dict, context: str,
                  timeout: float, read_only: bool = False,
@@ -235,13 +261,17 @@ class Team:
         if role not in ROLES:
             role = DEFAULT_ROLE
         spec = ROLES[role]
+        # per-worker model override (Codex-style): task["model"] picks the
+        # model THIS worker uses; unknown ids fall back to the team default
+        worker_model = model_by_id(str(task.get("model") or "")) or self.model
+        worker_provider = PROVIDERS.get(worker_model.provider, self.provider)
         tools = dict(self._toolsets[role])
         if read_only:
             tools = {n: t for n, t in tools.items()
                      if n not in ("write_file", "edit_file",
                                   "create_directory", "run_command")}
         schemas = ([t.openai_schema() for t in tools.values()]
-                   if self.model.supports_tools else None)
+                   if worker_model.supports_tools else None)
 
         # Launch wave: worker i waits ~i*STAGGER before its first call so
         # 8 workers spread across ~4s instead of one instant burst. This
@@ -265,7 +295,9 @@ class Team:
         report = WorkerReport(task=task["task"], role=role)
         result = None
         for _ in range(MAX_WORKER_STEPS):
-            result = self._chat(messages, schemas, timeout)
+            result = chat_with_retry(worker_provider, worker_model,
+                                     self.effort, messages, schemas,
+                                     timeout)
             if result.usage:
                 report.tokens_in += int(result.usage.get(
                     "prompt_tokens", 0) or 0)
@@ -320,7 +352,7 @@ class Team:
 
         content = (result.content or "") if result else ""
         report.elapsed_ms = int((time.monotonic() - t0) * 1000)
-        status, summary = _parse_final(content)
+        status, summary = parse_worker_final(content)
         report.status = status
         report.summary = (summary[:MAX_SUMMARY_CHARS] + " …[truncated]"
                           if len(summary) > MAX_SUMMARY_CHARS else summary)
@@ -402,11 +434,11 @@ if __name__ == "__main__":
             assert "kaboom" in errs[0].error
 
             # final-report parsing
-            s, summ = _parse_final("STATUS: DONE\nSUMMARY: line one\nline two")
+            s, summ = parse_worker_final("STATUS: DONE\nSUMMARY: line one\nline two")
             assert s == "done" and "line one" in summ and "line two" in summ
-            s, summ = _parse_final("STATUS: BLOCKED\nSUMMARY: need access")
+            s, summ = parse_worker_final("STATUS: BLOCKED\nSUMMARY: need access")
             assert s == "blocked" and summ == "need access"
-            s, summ = _parse_final("just some plain text")
+            s, summ = parse_worker_final("just some plain text")
             assert s == "done" and summ == "just some plain text"
 
             text = team.format(reports)

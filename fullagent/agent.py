@@ -38,6 +38,9 @@ from .client import (APIError, TurnCancelled, chat_blocking, chat_stream,
 from .config import Config, Effort, Model, Provider, PROVIDERS, model_by_id
 from .cortex import Budget, BudgetGovernor, LoopDetector
 from .council import Council
+from .crew import Crew, CrewError
+from .report import export_html, export_markdown, forecast, format_forecast
+from .workflows import WorkflowEngine, WorkflowError
 from .cov import CoverageEngine
 from .daemon import Daemon
 from .dashboard import Dashboard
@@ -105,6 +108,7 @@ class Turn:
     effort: str = ""
     error: str = ""
     usage: dict | None = None
+    scorecard: dict = field(default_factory=dict)
     duration: float = 0.0
     timestamp: str = field(
         default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
@@ -115,6 +119,67 @@ def _signature(name: str, args: dict) -> str:
     payload = json.dumps({"name": name, "args": args},
                          sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+
+NOTIFY_EVENTS = ("goal.closed", "focus.stop", "workflow.done",
+                 "crew.done", "provider.failover")
+
+# provider errors that justify an automatic model failover
+_FAILOVER_STATUSES = {408, 429, 500, 502, 503, 504}
+
+
+class Notifier:
+    """Enterprise event notifications — fire selected kernel events to a
+    file sink (JSONL) or an HTTP webhook. Never raises: notifications are
+    a courtesy, never a crash path. Configure via /notify."""
+
+    def __init__(self, log: EventLog) -> None:
+        self.log = log
+        self.sink: str = ""          # "" off | "file:<path>" | http(s) URL
+        self.sent = 0
+        self.last_error = ""
+
+    def configure(self, sink: str) -> str:
+        sink = str(sink or "").strip()
+        if sink in ("", "off"):
+            self.sink = ""
+            return "off"
+        if sink.startswith("file:"):
+            path = Path(sink[5:]).expanduser()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.sink = f"file:{path}"
+            return self.sink
+        if sink.startswith(("http://", "https://")):
+            self.sink = sink
+            return sink
+        raise ValueError("sink must be 'off', 'file:<path>', or an "
+                         "http(s):// URL")
+
+    def emit(self, event_type: str, payload: dict) -> bool:
+        if not self.sink:
+            return False
+        record = {"event": event_type, "ts": time.time(),
+                  "app": "fullagent", **payload}
+        try:
+            if self.sink.startswith("file:"):
+                with open(self.sink[5:], "a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, default=str) + "\n")
+            else:
+                import requests
+                requests.post(self.sink, json=record, timeout=5)
+            self.sent += 1
+            return True
+        except Exception as e:  # noqa: BLE001
+            self.last_error = f"{type(e).__name__}: {e}"
+            return False
+
+    def status(self) -> str:
+        state = self.sink or "off"
+        extra = f" · sent {self.sent}" if self.sent else ""
+        extra += f" · last error: {self.last_error}" if self.last_error else ""
+        return f"notifications: {state}{extra} · events: " \
+               + ", ".join(NOTIFY_EVENTS)
 
 
 class Agent:
@@ -140,6 +205,8 @@ class Agent:
         self.swarm = Swarm(self.log, self.provider, self.model, self.effort,
                            mastermind=self.mastermind)
         self.team = Team(self.log, self.provider, self.model, self.effort,
+                         mastermind=self.mastermind)
+        self.crew = Crew(self.log, self.provider, self.model, self.effort,
                          mastermind=self.mastermind)
         self.autopilot = AutoPilot(self.log)
         self.nexus = Nexus()
@@ -169,11 +236,28 @@ class Agent:
         self.mutator: MutationTester | None = None     # needs a suite cmd
 
         self.autonomy = 3
+        # live status pipe for the current turn (set in run_turn) — lets
+        # long-running tools (team/crew) stream progress into the UI border
+        self._turn_status: Callable[[str], None] | None = None
+        # Focus Mode (deep work): distance history drives stall detection
+        self._focus_history: list[float] = []
+        # enterprise extras
+        self.workflows = WorkflowEngine(self.log,
+                                        config.APP_DIR / "workflows",
+                                        executor=self._workflow_step,
+                                        judge=self.judge)
+        self.notifier = Notifier(self.log)
+        self._notify_seq = self.log.head()
+        self.health = {"model_errors": {}, "failovers": 0}
+        self._failed_over = False            # at most one failover per turn
+        self._turn_start_seq = 0
+        self._compact_digests: list[str] = []  # knowledge kept on compaction
         self._error_counts: dict[str, int] = {}
         self._file_hashes: dict[str, list[str]] = {}  # oscillation history
         self._register_code_tools()
         self._register_v4_tools()
         self._register_subagent_tools()
+        self._register_crew_tools()
         self._register_persisted_skills()
 
         # cassette: record/replay model calls (FULLAGENT_CASSETTE=path,
@@ -278,6 +362,11 @@ class Agent:
                 mem = (mem + "\n\n" + recall) if mem else recall
         if mem:
             sections["memory"] = mem
+        if self._compact_digests:
+            sections["compacted"] = (
+                "COMPACTED HISTORY — knowledge preserved from turns that "
+                "were compressed to fit the context window:\n- "
+                + "\n- ".join(self._compact_digests[-12:]))
         return sections
 
     def _tool_schemas(self) -> list[dict] | None:
@@ -299,6 +388,8 @@ class Agent:
         turn = Turn(user_text=user_text, model_id=self.model.id,
                     effort=self.cfg.effort)
         started = time.time()
+        self._turn_start_seq = self.log.head()
+        self._failed_over = False
 
         # AUTOPILOT: the agent decides for itself which powers this turn
         # needs — parallel team, goal mode, real-time web — and enables
@@ -339,6 +430,7 @@ class Agent:
                                   actor="human", provenance="user")
 
         iterations = 0
+        self._turn_status = on_status
         try:
             while iterations < config.MAX_TOOL_ITERATIONS:
                 iterations += 1
@@ -428,7 +520,16 @@ class Agent:
                  "content": turn.assistant_text or "(interrupted)"})
             self.log.append("turn.cancelled", {})
 
+        self._turn_status = None
         turn.duration = time.time() - started
+        try:
+            self._score_turn(turn)
+        except Exception:
+            pass  # scorecard is insight, never a crash path
+        try:
+            self._flush_notifications()
+        except Exception:
+            pass
         self.turns.append(turn)
         return turn
 
@@ -499,6 +600,7 @@ class Agent:
             self.log.append("context.compacted",
                             {"messages": len(self.messages),
                              "units": dropped,
+                             "digests": len(self._compact_digests),
                              "est_tokens": estimate_tokens(self.messages,
                                               self.model.id)},
                             actor="kernel")
@@ -590,6 +692,10 @@ class Agent:
                 break
         if end is None or end <= start:
             return False
+        digest = self._digest_messages(msgs[start:end])
+        if digest:
+            self._compact_digests.append(digest)
+            self._compact_digests = self._compact_digests[-20:]
         del msgs[start:end]
         return True
 
@@ -619,9 +725,16 @@ class Agent:
         are folded into memory so the main turn can build on them."""
         read_only = self.autonomy <= 1
         on_status(f"team:{len(route.tasks)}")
+
+        def _progress(finished: int, total: int, report) -> None:
+            icon = "✓" if report.status == "done" else (
+                "◐" if report.status == "blocked" else "✗")
+            on_status(f"⚡ team {finished}/{total} · {report.role} {icon}")
+
         reports = self.team.run(route.tasks,
                                 context=self.scout_context(),
-                                read_only=read_only)
+                                read_only=read_only,
+                                on_progress=_progress)
         # fold the results into episodic memory for the main turn
         for r in reports:
             if r.status == "done" and r.summary:
@@ -700,14 +813,17 @@ class Agent:
                                 tool_calls=stored.get("tool_calls", []),
                                 usage=stored.get("usage"),
                                 model=self.model.id)
+        def _attempt():
+            return chat_stream(self.provider, self.model, self.effort,
+                               self.messages, schemas,
+                               on_token=on_token,
+                               on_reasoning=on_reasoning,
+                               on_tool_start=lambda n: on_status(f"tool:{n}"),
+                               should_cancel=should_cancel,
+                               on_overflow=self._overflow_shrink)
+
         try:
-            result = chat_stream(self.provider, self.model, self.effort,
-                                 self.messages, schemas,
-                                 on_token=on_token,
-                                 on_reasoning=on_reasoning,
-                                 on_tool_start=lambda n: on_status(f"tool:{n}"),
-                                 should_cancel=should_cancel,
-                                 on_overflow=self._overflow_shrink)
+            result = _attempt()
         except APIError as e:
             # some providers refuse streaming or tool params — degrade gracefully
             msg = str(e).lower()
@@ -739,7 +855,24 @@ class Agent:
                                        self.effort, self.messages, schemas,
                                        on_overflow=self._overflow_shrink)
             else:
-                raise
+                # enterprise failover: provider outage -> switch model once
+                self.health["model_errors"][self.cfg.model_id] = \
+                    self.health["model_errors"].get(self.cfg.model_id, 0) + 1
+                fallback = self._failover_candidate(e)
+                if fallback is None:
+                    raise
+                old_id = self.cfg.model_id
+                self.cfg.model_id = fallback
+                self._failed_over = True
+                self.health["failovers"] += 1
+                self.log.append("provider.failover",
+                                {"from": old_id, "to": fallback,
+                                 "error": str(e)[:140]},
+                                actor="kernel")
+                label = model_by_id(fallback)
+                self._push_status(
+                    f"⚠ provider failover → {label.label if label else fallback}")
+                result = _attempt()
         if self.cassette is not None and self.cassette.mode == "record":
             self.cassette.record(self.model.id, self.messages, schemas,
                                  {"content": result.content,
@@ -767,6 +900,88 @@ class Agent:
             return None
         ceiling = g.get("autonomy_ceiling")
         return int(ceiling) if ceiling is not None else None
+
+    # -- focus mode (deep work) ---------------------------------------------------
+
+    def focus_continue(self, last_turn: Turn, remaining: int) -> str | None:
+        """FOCUS MODE brain: decide whether the deep-work loop should keep
+        going, and if so, return the next continuation prompt.
+
+        Returns None when focus should stop. Every decision is sealed in
+        the event log (focus.tick / focus.stop) — autonomous work is never
+        invisible (A7).
+
+        Stop conditions (mechanical, rung 1):
+          * the turn errored, was cancelled, or the budget paused it
+          * the goal closed / every clause is proven or waived
+          * distance stalled: no improvement for 3 consecutive ticks
+          * no goal and the agent produced a final answer with no tool
+            work twice in a row (it believes itself done)
+        """
+        goal = self.goal.status()
+
+        def _stop(reason: str) -> None:
+            self.log.append("focus.stop", {"reason": reason},
+                            actor="kernel")
+            self._focus_history.clear()
+
+        if last_turn.error:
+            _stop(f"turn ended with: {last_turn.error[:80]}")
+            return None
+
+        if goal.active:
+            open_clauses = [c for c in goal.clauses
+                            if c.state in ("OPEN", "REGRESSED")]
+            if not open_clauses:
+                _stop("goal achieved — every clause proven or waived")
+                return None
+            distance = goal.distance
+            self._focus_history.append(distance)
+            recent = self._focus_history[-4:]
+            if len(recent) >= 4 and all(
+                    recent[i] >= recent[i - 1] - 1e-9
+                    for i in range(1, len(recent))):
+                _stop(f"stalled — distance stuck at {distance:.2f} for 3 "
+                      "ticks; needs a human decision")
+                return None
+            focus_clause = goal.focus or open_clauses[0].id
+            self.log.append("focus.tick",
+                            {"distance": distance,
+                             "remaining": remaining,
+                             "focus": focus_clause},
+                            actor="kernel")
+            return (f"CONTINUE — deep-work mode ({remaining} turns left). "
+                    f"Goal: {goal.statement}. Current focus: clause "
+                    f"{focus_clause}. Distance to done: {distance:.2f}. "
+                    f"Do NOT repeat completed work and do NOT re-prove "
+                    f"PROVEN clauses. Take the next concrete step that "
+                    f"moves clause {focus_clause} forward, then verify it.")
+
+        # no active goal — stop when the agent is clearly done
+        worked = bool(last_turn.tools)
+        self._focus_history.append(1.0 if worked else 0.0)
+        tail = self._focus_history[-2:]
+        if len(tail) == 2 and tail == [0.0, 0.0]:
+            _stop("agent answered without further tool work — done")
+            return None
+        self.log.append("focus.tick", {"remaining": remaining},
+                        actor="kernel")
+        return (f"CONTINUE — deep-work mode ({remaining} turns left). "
+                f"Review what is done, verify it against reality, and "
+                f"complete whatever is still missing. Do not repeat "
+                f"completed work.")
+
+    def _push_status(self, text: str) -> None:
+        """Stream a live status line into the current turn's UI (if any).
+        Used by long-running tools (team/crew) so parallel work is never
+        invisible."""
+        cb = self._turn_status
+        if cb is None:
+            return
+        try:
+            cb(text)
+        except Exception:
+            pass
 
     def _attribute(self, tool_name: str) -> tuple[str | None, str | None]:
         """§38.1 total attribution. Returns (clause_id, orphan_reason).
@@ -953,6 +1168,199 @@ class Agent:
 
         # §13.4 exact-repeat detection over recent tool calls
         self.loop_det.detect()
+
+    # -- enterprise: workflows ----------------------------------------------------
+
+    def _workflow_step(self, item: dict) -> dict:
+        """Execute ONE workflow step on the Crew (real subagent). Steps
+        within a phase arrive sequentially here; the crew runs each in
+        the background and we wait for its verdict."""
+        try:
+            agent = self.crew.spawn(
+                item["task"], role=item.get("role", "coder"),
+                context=self.scout_context(),
+                read_only=self.autonomy <= 1,
+                model_id=str(item.get("model", "") or ""))
+        except CrewError as e:
+            return {"status": "error", "summary": str(e)}
+        self.crew.wait([agent.id], timeout=240.0)
+        status = ("done" if agent.state == "done"
+                  else "blocked" if agent.state == "blocked"
+                  else "error")
+        summary = agent.summary or agent.error or ""
+        try:
+            self.crew.close(agent.id)
+        except CrewError:
+            pass
+        return {"status": status, "summary": summary}
+
+    def export_report(self, fmt: str = "md") -> Path:
+        """Write the enterprise audit report (md or html) to the cwd."""
+        title = f"FullAgent session {self.session_id}"
+        if fmt == "html":
+            text, suffix = export_html(self.log, title), ".html"
+        else:
+            text, suffix = export_markdown(self.log, title), ".md"
+        path = Path.cwd() / f"fullagent-report-{self.session_id}{suffix}"
+        path.write_text(text)
+        self.log.append("report.exported",
+                        {"path": str(path), "format": fmt},
+                        actor="human")
+        return path
+
+    def get_forecast(self) -> str:
+        return format_forecast(forecast(self.log))
+
+    # -- enterprise: provider health + failover ------------------------------------
+
+    def _failover_candidate(self, err: APIError) -> str | None:
+        """Pick the model to fail over to after a provider failure, or
+        None if failover is impossible/not allowed right now."""
+        if self._failed_over:
+            return None  # at most one failover per turn
+        status = getattr(err, "status", None)
+        if status is not None and status not in _FAILOVER_STATUSES:
+            return None  # 4xx (except timeouts) are not provider outages
+        explicit = str(self.cfg.extra.get("failover_model", "") or "")
+        if explicit and explicit != self.cfg.model_id \
+                and model_by_id(explicit) is not None:
+            return explicit
+        # auto-pick: same provider first, then any capable model
+        current = self.model
+        from .config import MODELS
+        same_provider = [m for m in MODELS
+                         if m.provider == current.provider
+                         and m.id != current.id
+                         and m.supports_tools >= current.supports_tools]
+        others = [m for m in MODELS
+                  if m.provider != current.provider
+                  and m.id != current.id
+                  and m.supports_tools >= current.supports_tools]
+        for m in same_provider + others:
+            return m.id
+        return None
+
+    # -- enterprise: turn scorecard ---------------------------------------------------
+
+    def _score_turn(self, turn: Turn) -> dict:
+        """Deterministic quality metrics for the finished turn — sealed
+        as turn.scorecard. No model judgement, only measured facts."""
+        tool_calls = len(turn.tools)
+        errors = sum(1 for t in turn.tools
+                     if t.status in ("error", "blocked", "denied"))
+        writes: dict[str, int] = {}
+        for t in turn.tools:
+            if t.name in ("write_file", "edit_file") and t.status == "done":
+                path = str(t.args.get("path", ""))
+                if path:
+                    writes[path] = writes.get(path, 0) + 1
+        rework = sum(1 for n in writes.values() if n > 1)
+        verdicts = [e for e in self.log.events()
+                    if e.type == "judge.verdict"
+                    and e.seq > self._turn_start_seq]
+        verified = sum(1 for v in verdicts if v.data.get("passed"))
+        score = max(0, min(100, 100 - 20 * errors - 10 * rework))
+        card = {"tool_calls": tool_calls, "errors": errors,
+                "rework_files": rework, "verified": verified,
+                "verdicts": len(verdicts), "score": score,
+                "duration": round(turn.duration, 2)}
+        turn.scorecard = card
+        self.log.append("turn.scorecard", card, actor="kernel")
+        return card
+
+    # -- enterprise: compaction digests -----------------------------------------------
+
+    def _digest_messages(self, msgs: list[dict]) -> str:
+        """Deterministic one-line digest of a turn about to be compacted
+        away — the knowledge survives even when the tokens don't."""
+        tools_used: list[str] = []
+        files: list[str] = []
+        problems: list[str] = []
+        for m in msgs:
+            for tc in (m.get("tool_calls") or []):
+                name = (tc.get("function") or {}).get("name", "")
+                if name and name not in tools_used:
+                    tools_used.append(name)
+            if m.get("role") == "tool":
+                content = str(m.get("content", ""))
+                import re as _re
+                for match in _re.finditer(
+                        r"OK: (?:wrote \d+ chars to|replaced .*? in) (\S+)",
+                        content):
+                    f = match.group(1)
+                    if f not in files:
+                        files.append(f)
+                if content.startswith("ERROR:"):
+                    problems.append(content[6:80])
+        parts = []
+        if tools_used:
+            parts.append("tools: " + ", ".join(tools_used[:6]))
+        if files:
+            parts.append("wrote: " + ", ".join(files[:5]))
+        if problems:
+            parts.append("hit: " + problems[0])
+        return "; ".join(parts)
+
+    # -- enterprise: notifications ------------------------------------------------------
+
+    def _flush_notifications(self) -> None:
+        """Emit any NOTIFY_EVENTS sealed since the last flush."""
+        if not self.notifier.sink:
+            self._notify_seq = self.log.head()
+            return
+        for ev in self.log.events():
+            if ev.seq <= self._notify_seq:
+                continue
+            if ev.type in NOTIFY_EVENTS:
+                self.notifier.emit(ev.type, ev.data)
+        self._notify_seq = self.log.head()
+
+    # -- enterprise: session resume -------------------------------------------------------
+
+    def sessions_catalog(self) -> list[dict]:
+        """Every branch that carries a session — for /resume."""
+        catalog = []
+        for branch in self.log.branches():
+            events = self.log.events(branch)
+            session_id = ""
+            started = 0.0
+            for e in events:
+                if e.type == "session.start":
+                    session_id = str(e.data.get("session_id", ""))
+                    started = e.ts
+            catalog.append({"branch": branch, "session_id": session_id,
+                            "events": len(events),
+                            "head": self.log.head(branch),
+                            "started": started})
+        catalog.sort(key=lambda c: -c["started"])
+        return catalog
+
+    def resume_session(self, branch: str) -> int:
+        """Checkout a branch and rebuild the conversation from the fold.
+        The full history (tool calls, verdicts) stays in the log; the
+        model-visible context is rebuilt from user/assistant messages."""
+        if branch not in self.log.branches():
+            raise ValueError(
+                f"unknown branch {branch!r} — known: "
+                + ", ".join(self.log.branches()))
+        self.log.checkout(branch)
+        st = fold(self.log)
+        session_id = ""
+        for e in self.log.events():
+            if e.type == "session.start":
+                session_id = str(e.data.get("session_id", "")) or session_id
+        self.session_id = session_id or self.session_id
+        self.log.session = self.session_id
+        self.messages = []
+        self._reseat_system_prompt()
+        self.messages.extend(st.messages)
+        self.turns = []
+        self._focus_history.clear()
+        self.log.append("session.resumed",
+                        {"branch": branch, "session_id": self.session_id,
+                         "messages": len(st.messages)},
+                        actor="human")
+        return len(st.messages)
 
     # -- time travel (§9) --------------------------------------------------------
 
@@ -1243,13 +1651,24 @@ class Agent:
             clean: list[dict] = []
             for t in tasks[:8]:
                 if isinstance(t, dict) and str(t.get("task", "")).strip():
-                    clean.append({"task": str(t["task"]).strip(),
-                                  "role": str(t.get("role", "")).strip()})
+                    entry = {"task": str(t["task"]).strip(),
+                             "role": str(t.get("role", "")).strip()}
+                    if str(t.get("model", "")).strip():
+                        entry["model"] = str(t["model"]).strip()
+                    clean.append(entry)
             if not clean:
                 return "ERROR: no valid tasks found in the list"
             ro = read_only or self.autonomy <= 1
+            self._push_status(f"⚡ team 0/{len(clean)} · launching…")
+
+            def _team_progress(finished: int, total: int, report) -> None:
+                icon = "✓" if report.status == "done" else (
+                    "◐" if report.status == "blocked" else "✗")
+                self._push_status(
+                    f"⚡ team {finished}/{total} · {report.role} {icon}")
+
             reports = team.run(clean, context=self.scout_context(),
-                               read_only=ro)
+                               read_only=ro, on_progress=_team_progress)
             return team.format(reports)
 
         def spawn_scouts(questions: list) -> str:
@@ -1265,7 +1684,14 @@ class Agent:
             qs = [str(q).strip() for q in questions[:8] if str(q).strip()]
             if not qs:
                 return "ERROR: no valid questions found in the list"
-            reports = swarm.scout(qs, context=self.scout_context())
+            self._push_status(f"⚡ scouts 0/{len(qs)} · launching…")
+
+            def _scout_progress(finished: int, total: int, report) -> None:
+                icon = "✓" if report.ok else "✗"
+                self._push_status(f"⚡ scouts {finished}/{total} {icon}")
+
+            reports = swarm.scout(qs, context=self.scout_context(),
+                                  on_progress=_scout_progress)
             return swarm.format(reports)
 
         self.tools["spawn_subagents"] = Tool(
@@ -1297,6 +1723,165 @@ class Agent:
                               "items": {"type": "string"}}},
                 "required": ["questions"]},
             spawn_scouts)
+
+    def _register_crew_tools(self) -> None:
+        """Codex-style persistent subagents: spawn / send / wait / close /
+        resume. Unlike spawn_subagents (batch, blocking), crew agents run
+        in the BACKGROUND and keep their full conversation, so the main
+        loop stays responsive and follow-ups never start from zero."""
+        crew = self.crew
+
+        def spawn_agent(task: str, role: str = "coder", name: str = "",
+                        read_only: bool = False, model: str = "") -> str:
+            if not str(task or "").strip():
+                return "ERROR: task must be a non-empty string"
+            try:
+                agent = crew.spawn(
+                    task, role=role or "coder", name=name,
+                    context=self.scout_context(),
+                    read_only=read_only or self.autonomy <= 1,
+                    model_id=str(model or ""))
+            except CrewError as e:
+                return f"ERROR: {e}"
+            model_note = (f" on model '{agent.model_id}'"
+                          if agent.model_id else "")
+            self._push_status(f"⚡ crew · {agent.nickname} ({agent.role}) launched")
+            return (f"✓ subagent [{agent.id}] '{agent.nickname}' "
+                    f"({agent.role}){model_note} is RUNNING in the "
+                    f"background.\n"
+                    f"Collect with wait_for_agents, iterate with "
+                    f"send_to_agent, retire with close_agent.\n"
+                    f"{crew.format_status()}")
+
+        def send_to_agent(id: str, message: str,
+                          interrupt: bool = False) -> str:
+            try:
+                agent = crew.send(id, message, interrupt=interrupt)
+            except CrewError as e:
+                return f"ERROR: {e}"
+            return (f"✓ message delivered to [{agent.id}] "
+                    f"'{agent.nickname}' — state: {agent.state}. "
+                    f"wait_for_agents collects the reply.")
+
+        def wait_for_agents(ids: list | None = None,
+                            timeout: float = 120.0) -> str:
+            try:
+                timeout = max(1.0, min(float(timeout or 120.0), 600.0))
+            except (TypeError, ValueError):
+                timeout = 120.0
+            clean_ids = None
+            if isinstance(ids, list) and ids:
+                clean_ids = [str(i) for i in ids if str(i).strip()]
+            try:
+                targets = ([crew.get(i) for i in clean_ids]
+                           if clean_ids else crew.list())
+                targets = [a for a in targets if a is not None]
+                if not targets:
+                    return "ERROR: no matching subagents — spawn one first"
+            except CrewError as e:
+                return f"ERROR: {e}"
+            import time as _time
+            deadline = _time.monotonic() + timeout
+            while _time.monotonic() < deadline:
+                running = sum(1 for a in targets if a.state == "running")
+                if running == 0:
+                    break
+                self._push_status(
+                    f"⚡ crew waiting · {running}/{len(targets)} running")
+                _time.sleep(0.4)
+            states = {a.id: a.state for a in targets}
+            still_running = [i for i, s in states.items() if s == "running"]
+            lines = [f"crew states: {states}"]
+            if still_running:
+                lines.append(f"still running after {timeout:.0f}s: "
+                             + ", ".join(still_running)
+                             + " — wait again or proceed without them")
+            lines.append(crew.format([crew.get(i) for i in states
+                                      if crew.get(i)]))
+            return "\n".join(lines)
+
+        def close_agent(id: str) -> str:
+            try:
+                agent = crew.close(id)
+            except CrewError as e:
+                return f"ERROR: {e}"
+            return (f"✓ [{agent.id}] '{agent.nickname}' closed. "
+                    f"resume_agent brings it back with full context.")
+
+        def resume_agent(id: str) -> str:
+            try:
+                agent = crew.resume(id)
+            except CrewError as e:
+                return f"ERROR: {e}"
+            return (f"✓ [{agent.id}] '{agent.nickname}' resumed "
+                    f"(state: {agent.state}) — send_to_agent works again.")
+
+        def crew_status() -> str:
+            return crew.format_status()
+
+        _STR = {"type": "string"}
+        self.tools["spawn_agent"] = Tool(
+            "spawn_agent",
+            "Spawn ONE persistent background subagent (Codex-style). "
+            "Returns IMMEDIATELY with the agent id while it works in "
+            "parallel — you stay responsive. Roles: coder, researcher, "
+            "tester, reviewer, analyst. The agent keeps its full "
+            "conversation: follow up with send_to_agent, collect with "
+            "wait_for_agents. Use for independent workstreams you want "
+            "to iterate on, not fire-and-forget batches.",
+            {"type": "object", "properties": {
+                "task": _STR,
+                "role": _STR,
+                "name": {"type": "string",
+                         "description": "optional nickname"},
+                "read_only": {"type": "boolean"},
+                "model": {"type": "string",
+                          "description": "optional model id override for "
+                                         "this subagent only"}},
+                "required": ["task"]},
+            spawn_agent)
+        self.tools["send_to_agent"] = Tool(
+            "send_to_agent",
+            "Send a follow-up message into a living subagent's context "
+            "(its full history is preserved). Works on done/blocked/error "
+            "agents immediately; queues for running agents. Use to iterate "
+            "on a subagent's output instead of re-spawning.",
+            {"type": "object", "properties": {
+                "id": _STR, "message": _STR,
+                "interrupt": {"type": "boolean"}},
+                "required": ["id", "message"]},
+            send_to_agent)
+        self.tools["wait_for_agents"] = Tool(
+            "wait_for_agents",
+            "Block until the named subagents finish (or all, if no ids) "
+            "and return their full reports. Call this when you need the "
+            "results of spawned background agents.",
+            {"type": "object", "properties": {
+                "ids": {"type": "array", "items": _STR,
+                        "description": "agent ids; omit for all"},
+                "timeout": {"type": "number"}},
+                "required": []},
+            wait_for_agents)
+        self.tools["close_agent"] = Tool(
+            "close_agent",
+            "Retire a subagent (it keeps its history; resume_agent can "
+            "bring it back). Close agents you are done with.",
+            {"type": "object", "properties": {"id": _STR},
+                "required": ["id"]},
+            close_agent)
+        self.tools["resume_agent"] = Tool(
+            "resume_agent",
+            "Bring a closed subagent back so it can receive follow-up "
+            "messages again.",
+            {"type": "object", "properties": {"id": _STR},
+                "required": ["id"]},
+            resume_agent)
+        self.tools["crew_status"] = Tool(
+            "crew_status",
+            "Show all crew subagents and their states (running / done / "
+            "error / closed).",
+            {"type": "object", "properties": {}, "required": []},
+            crew_status)
 
     # -- v3 subsystem callbacks ------------------------------------------------
 

@@ -27,10 +27,10 @@ Linux x86_64 single-file binary, no Python needed:
 curl -fsSL https://raw.githubusercontent.com/cmyolo441-coder/perfectagent/main/install.sh | bash
 ```
 
-Or download the binary directly from the [v2.3 release](https://github.com/cmyolo441-coder/perfectagent/releases/tag/v2.3):
+Or download the binary directly from the [v2.4 release](https://github.com/cmyolo441-coder/perfectagent/releases/tag/v2.4):
 
 ```bash
-curl -fsSL -o fullagent https://github.com/cmyolo441-coder/perfectagent/releases/download/v2.3/fullagent-linux-x64
+curl -fsSL -o fullagent https://github.com/cmyolo441-coder/perfectagent/releases/download/v2.4/fullagent-linux-x64
 chmod +x fullagent && sudo mv fullagent /usr/local/bin/
 ```
 
@@ -70,6 +70,41 @@ python main.py
   (researcher / coder / tester / reviewer / analyst), each with real tools
   and a role brief. Reads fan out freely; writes serialise through one
   global lock, so two workers can never mutate the world at once
+- **Crew** — Codex-style **persistent** subagents: `spawn_agent` launches
+  a background worker and returns instantly (the conversation stays
+  responsive), `send_to_agent` iterates on its LIVING context,
+  `wait_for_agents` collects results, `close_agent` / `resume_agent`
+  manage the lifecycle. Live progress streams in the prompt border.
+  Every subagent accepts a **per-agent model override** (route grunt
+  work to a fast model, the hard piece to the strongest one)
+- **Focus Mode** — deep work: `/focus 10` arms auto-continuation and the
+  agent keeps working turn after turn until the goal closes, progress
+  stalls, or the budget pauses. Every continuation decision is a sealed
+  kernel event (`focus.tick` / `focus.stop`)
+- **Rendered replies** — `/render on` streams the reply live in the
+  border and prints the finished answer as rich Markdown
+- **Instant triage** — tool errors show the healer's root-cause
+  classification right on the result line
+- **Workflows** — saved multi-step pipelines (`/workflow run ship`):
+  phased orchestration where steps in the same phase run in parallel,
+  each step is a real subagent, and optional `expect` predicates block
+  the pipeline on failure
+- **Audit export** — `/export md|html` writes a self-contained session
+  report: timeline, tool stats, judge verdicts, per-model usage
+- **Forecast** — `/forecast` projects turns-to-done from measured goal
+  velocity and tokens-per-turn (numbers, not vibes)
+- **Provider failover** — on outage (429/5xx) the agent switches to a
+  fallback model once, sealed as `provider.failover`; `/health` shows
+  the stats
+- **Notifications** — `/notify <webhook|file:path>` fires kernel events
+  (goal closed, focus stop, workflow done…) to your sink
+- **Session resume** — `/resume` lists branches/sessions; continue any
+  of them with its conversation rebuilt from the event log
+- **Turn scorecard** — every turn ends with deterministic quality
+  metrics (errors, rework, verified claims) sealed as `turn.scorecard`
+- **Live context meter** — the border shows real-time context-window
+  usage (`ctx 37%`), and approvals show a real unified diff before you
+  press `y`
 - **AutoPilot** — the agent decides **for itself** what each turn needs and
   enables it automatically: parallel team when subtasks are independent,
   goal mode when the request is a verifiable mission, real-time web when
@@ -137,6 +172,10 @@ Event-log commands:
 - `/mission [start|tick|list|abandon]` — daemon mission control
 - `/heal` — self-healing ledger: root causes captured + healed
 - `/skills` — the skill forge: self-authored, safety-gated tools
+- `/crew` — persistent subagent roster; `/crew spawn <role> <task>`,
+  `/crew send <id> <msg>`, `/crew wait`, `/crew close <id>`, `/crew resume <id>`
+- `/focus <1-20>` — deep-work mode: auto-continues until done · `/focus off`
+- `/render [on|off]` — rendered-markdown replies (streaming stays live in the border)
 - `/council <proposition>` — convene an adversarial debate
 - `/analyze <path>` — static analysis: taint flows, complexity, cycles
 - `/graph [index|query|impact]` — knowledge graph of code + session
@@ -161,10 +200,22 @@ Three OpenAI-compatible providers are built in:
 - **Agnes** (`https://apihub.agnes-ai.com/v1`) — agnes-2.5-flash (fast,
   tool-capable, reasoning-aware)
 
-API keys are embedded; override with `OPENCODE_API_KEY` /
-`TOKENROUTER_API_KEY` / `AGNES_API_KEY` environment variables. Config
-(model, effort, auto-approve) persists in `~/.fullagent/config.json`;
-sessions save to `~/.fullagent/sessions/`.
+API keys ship as built-in defaults so the app works out of the box;
+environment variables always take precedence if you want to use your
+own:
+
+```bash
+export OPENCODE_API_KEY=***      # OpenCode Zen (default provider)
+# and/or: TOKENROUTER_API_KEY, AGNES_API_KEY
+```
+
+> ⚠️ The built-in keys live in git history — if you push this repo
+> publicly, rotate them or replace them with your own.
+
+Config (model, effort, auto-approve) persists in
+`~/.fullagent/config.json`; sessions save to `~/.fullagent/sessions/`.
+If `~/.fullagent` is not writable, state transparently falls back to
+`$TMPDIR/fullagent-<uid>` — the app never crashes on a read-only home.
 
 ## Layout
 

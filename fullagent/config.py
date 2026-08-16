@@ -8,7 +8,36 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 APP_NAME = "FullAgent"
-APP_DIR = Path(os.environ.get("FULLAGENT_HOME", Path.home() / ".fullagent"))
+
+
+def _pick_app_dir() -> Path:
+    """Choose a WRITABLE home for app state — never a crash path.
+
+    Order: $FULLAGENT_HOME, ~/.fullagent, <tmp>/fullagent-<uid>.
+    Each candidate is probed with a real write; the first one that
+    actually works wins, so a read-only home dir degrades gracefully
+    instead of killing the app at startup (OSError on event log)."""
+    import tempfile
+    candidates: list[Path] = []
+    env = os.environ.get("FULLAGENT_HOME")
+    if env:
+        candidates.append(Path(env))
+    candidates.append(Path.home() / ".fullagent")
+    uid = str(os.getuid()) if hasattr(os, "getuid") else "user"
+    candidates.append(Path(tempfile.gettempdir()) / f"fullagent-{uid}")
+    for c in candidates:
+        try:
+            c.mkdir(parents=True, exist_ok=True)
+            probe = c / ".write-probe"
+            probe.write_text("ok")
+            probe.unlink()
+            return c
+        except OSError:
+            continue
+    return Path(tempfile.gettempdir())  # last resort: tmp itself
+
+
+APP_DIR = _pick_app_dir()
 CONFIG_FILE = APP_DIR / "config.json"
 HISTORY_FILE = APP_DIR / "history"
 SESSIONS_DIR = APP_DIR / "sessions"
