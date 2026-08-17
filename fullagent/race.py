@@ -1,20 +1,22 @@
 """RACE — racing universes: first verified strategy wins.
 
-One problem, N strategies, all launched AT ONCE. Each universe pursues
-a different approach (role + instructions); the moment one produces a
-result that passes the verifier, it wins — every other universe is
-cancelled mid-flight. Losers' partial work is discarded by design:
-you bought speed, you paid the compute.
+One problem, N strategies, tried ONE AT A TIME in lane order (no
+parallel subagents). Each universe pursues a different approach (role +
+instructions); the moment one produces a result that passes the
+verifier, it wins — every remaining lane is skipped and sealed as
+cancelled. Losers' partial work is discarded by design: you bought
+thoroughness, you paid the compute.
 
     strategies  default three lanes — the DIRECT lane (just do it),
                 the CAREFUL lane (analyse first, then act), and the
-                PARALLEL lane (fan the work out) — or supply your own
-    race        threads launch together; results stream into a queue;
-                after each landing the verifier (injectable —
-                production uses the Judge) checks it
-    finish      first PASS wins (race.winner); remaining threads get a
-                cancel flag; if NOTHING passes, the best failure is
-                returned with all universes' evidence (race.cancel)
+                SPLIT lane (break the work into parts) — or supply
+                your own
+    race        lanes run serially; after each one lands the verifier
+                (injectable — production uses the Judge) checks it
+    finish      first PASS wins (race.winner); remaining lanes are
+                sealed cancelled without ever running; if NOTHING
+                passes, the best failure is returned with all
+                universes' evidence (race.cancel)
 
 The runner and verifier are injectable; the self-test races three
 universe-runners with different speeds and proves: the fast-but-wrong
@@ -24,11 +26,9 @@ cancelled before finishing.
 
 from __future__ import annotations
 
-import queue
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable
 
 from .kernel import EventLog
 
@@ -38,9 +38,8 @@ DEFAULT_STRATEGIES = (
     {"id": "careful", "role": "architect",
      "instructions": "Map the problem first, then implement the safest "
                      "solution."},
-    {"id": "parallel", "role": "planner",
-     "instructions": "Split the work into independent parts and "
-                     "coordinate them."},
+    {"id": "split", "role": "planner",
+     "instructions": "Break the work into parts and assemble them."},
 )
 
 
@@ -81,6 +80,9 @@ class RacingUniverses:
         self.strategies = list(strategies or DEFAULT_STRATEGIES)
 
     def race(self, task: str, timeout: float = 300.0) -> RaceResult:
+        """Run the strategies ONE AT A TIME in lane order — no parallel
+        universes. The first verified pass wins; every lane after the
+        winner is sealed cancelled without ever running."""
         task = str(task or "").strip()
         result = RaceResult(task=task)
         if not task or not self.strategies:
@@ -93,49 +95,31 @@ class RacingUniverses:
                         actor="kernel")
 
         cancel = threading.Event()
-        q: "queue.Queue[UniverseOutcome]" = queue.Queue()
+        deadline = t0 + timeout
+        winner: UniverseOutcome | None = None
 
-        def _run(strategy: dict) -> None:
+        for s in self.strategies:
+            if time.monotonic() >= deadline:
+                break
             started = time.monotonic()
             try:
-                out = self.runner(strategy, task, cancel)
+                out = self.runner(s, task, cancel)
                 outcome = UniverseOutcome(
-                    strategy=strategy["id"], result=str(out or ""),
+                    strategy=s["id"], result=str(out or ""),
                     elapsed_ms=int((time.monotonic() - started) * 1000))
             except Exception as e:    # a crashing universe just loses
                 outcome = UniverseOutcome(
-                    strategy=strategy["id"],
+                    strategy=s["id"],
                     result=f"ERROR: {e}",
                     elapsed_ms=int((time.monotonic() - started) * 1000))
-            q.put(outcome)
-
-        threads = [threading.Thread(target=_run, args=(s,),
-                                    name=f"race:{s['id']}", daemon=True)
-                   for s in self.strategies]
-        for t in threads:
-            t.start()
-
-        finished = 0
-        winner: UniverseOutcome | None = None
-        deadline = time.monotonic() + timeout
-        while finished < len(self.strategies) and \
-                time.monotonic() < deadline:
-            try:
-                outcome = q.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            finished += 1
-            outcome.passed = (not outcome.cancelled
-                              and self.verifier(task, outcome.result))
+            outcome.passed = self.verifier(task, outcome.result)
             result.outcomes.append(outcome)
-            if outcome.passed and winner is None:
+            if outcome.passed:
                 winner = outcome
-                cancel.set()          # the race is over — stop the rest
-                break                 # and stop WAITING: losers are
-                                       # recorded as cancelled at flight
-        if time.monotonic() >= deadline:
-            cancel.set()
-        # any strategy that never landed lost the race in flight
+                cancel.set()
+                break
+
+        # lanes after the winner (or timeout) never ran — sealed cancelled
         landed = {o.strategy for o in result.outcomes}
         for s in self.strategies:
             if s["id"] not in landed:
@@ -202,16 +186,14 @@ if __name__ == "__main__":
         result = race.race("meaning of life", timeout=10.0)
 
         by_id = {o.strategy: o for o in result.outcomes}
-        # the fast-but-unverified lane finished first and LOST
+        # the fast-but-unverified lane ran first and LOST
         assert "direct" in by_id and not by_id["direct"].passed
-        # the careful lane won at ~350ms
+        # the careful lane verified and won
         assert result.winner == "careful", result.to_dict()
         assert "42" in result.answer
-        # the slow lane was cancelled and never delivered a verdict
-        assert "parallel" not in by_id or \
-            by_id["parallel"].cancelled or \
-            by_id["parallel"].result == "CANCELLED"
-        assert result.elapsed_ms < 900     # did not wait for the slow
+        # the slow lane never ran — sealed cancelled after the winner
+        assert by_id["split"].cancelled and by_id["split"].result == ""
+        assert result.elapsed_ms < 900     # slow lane never ran
 
         # when NOTHING passes, the best failure surfaces with evidence
         def never_pass(t, r):
@@ -230,7 +212,7 @@ if __name__ == "__main__":
 
         race3 = RacingUniverses(log, boom, verifier)
         r3 = race3.race("survive", timeout=5.0)
-        assert r3.winner == "careful" or r3.winner == "parallel", \
+        assert r3.winner == "careful" or r3.winner == "split", \
             r3.to_dict()
         crashed = next(o for o in r3.outcomes if o.strategy == "direct")
         assert "exploded" in crashed.result and not crashed.passed

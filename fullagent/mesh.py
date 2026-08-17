@@ -58,7 +58,7 @@ class MeshNode:
     def __init__(self, log: EventLog, node_id: str,
                  executor=None, host: str = "127.0.0.1") -> None:
         """executor(task: str, role: str) -> {"status", "summary"} —
-        how THIS node runs delegated work (production: a Team worker)."""
+        how THIS node runs delegated work (production: a Crew worker)."""
         self.log = log
         self.node_id = node_id
         self.executor = executor

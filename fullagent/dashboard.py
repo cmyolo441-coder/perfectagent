@@ -39,9 +39,9 @@ class Dashboard:
         proven = len(st.goal_done)
         clauses = len(goal.get("clauses") or []) if goal else 0
 
-        # sub-agent activity from the most recent reports
-        swarm_active = len(st.swarm_reports)
-        team_active = len(st.team_reports)
+        # sub-agent activity from the crew roster
+        crew_done = sum(1 for e in self.log.events()
+                        if e.type == "crew.done")
 
         # routing + speculation dividends
         routed = len(st.router_decisions)
@@ -92,8 +92,7 @@ class Dashboard:
             "goal_statement": (goal or {}).get("statement", ""),
             "clauses_proven": proven,
             "clauses_total": clauses,
-            "swarm_reports": swarm_active,
-            "team_reports": team_active,
+            "crew_done": crew_done,
             "routed": routed,
             "routed_cost": round(routed_cost, 4),
             "spec_prefetched": prefetched,
@@ -146,8 +145,7 @@ class Dashboard:
             lines.append(" GOAL   none active")
 
         # agents panel
-        lines.append(f" AGENTS swarm reports {s['swarm_reports']}   "
-                     f"team reports {s['team_reports']}   "
+        lines.append(f" AGENTS crew done {s['crew_done']}   "
                      f"councils {s['councils']}")
 
         # router panel

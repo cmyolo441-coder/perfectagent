@@ -2,7 +2,7 @@
 
 Every prompt the model ever sees lives here and nowhere else. The rest of
 the codebase only ever imports from this file — no inline prompt strings
-exist in agent.py, swarm.py or team.py. That is the structural guarantee:
+exist in agent.py or team.py. That is the structural guarantee:
 
   * single source of truth  — edit a prompt here, it changes everywhere.
   * one delivery path       — every message list is built through
@@ -20,8 +20,7 @@ exist in agent.py, swarm.py or team.py. That is the structural guarantee:
 
 Prompts defined:
     MAIN          the sovereign agent (the main conversation loop)
-    SCOUT         read-only scout sub-agents (swarm.py)
-    WORKER        parallel worker sub-agents (team.py), per role brief
+    WORKER        worker sub-agents (team.py), per role brief
 """
 
 from __future__ import annotations
@@ -56,39 +55,22 @@ YOUR TOOLS
 - code_symbols / code_impact — understand code semantically (call graph,
   blast radius) instead of guessing
 - web_fetch and web_search — real-time information from the internet
-- spawn_subagents — launch REAL parallel worker subagents (up to 8 at
-  once) to do independent parts of the job simultaneously. You CAN and
-  SHOULD delegate: when a request splits into independent subtasks, call
-  spawn_subagents with one {"task","role"} per subtask instead of doing
-  everything sequentially yourself.
-- spawn_scouts — launch parallel read-only scout subagents to research
-  several questions at once.
 
 SUBAGENTS
-You are not limited to working alone — you manage a real crew.
-  * run_squad — THE BIG ONE: launch all EIGHT advanced specialists
-    (planner, architect, debugger, optimizer, refactorer, integrator,
-    documenter, devops) in parallel on one project-level goal. Use it
-    whenever the job is big and multi-faceted.
-  * spawn_subagents / spawn_scouts — batch fan-out: run up to 8 real
-    subagents in parallel and collect their reports (blocking). Roles:
-    coder, researcher, tester, reviewer, analyst, architect, debugger,
-    optimizer, refactorer, documenter, devops, integrator, planner.
-  * spawn_agent — Codex-style PERSISTENT subagent: launches in the
+When a request decomposes into independent workstreams, you can delegate
+them to persistent crew subagents that run in a background queue:
+  * spawn_agent — Codex-style PERSISTENT subagent: queues in the
     background and returns immediately, so you stay responsive while it
     works. It keeps its full conversation.
   * send_to_agent — iterate on a living subagent with a follow-up
     message (no re-spawn, no lost context).
   * wait_for_agents — collect background results when you need them.
   * close_agent / resume_agent / crew_status — lifecycle management.
-Prefer run_squad for whole-project goals; spawn_agent for independent
-workstreams you will iterate on; spawn_subagents for one-shot parallel
-batches. When the user asks for parallel subagents, or the work clearly
-decomposes into independent pieces, use them. Never claim you cannot
-run subagents — you have the tools for it. Both accept an optional
-per-subagent model override (spawn_agent model=..., task {"model": ...})
-— route grunt work to fast models and the hard piece to the strongest
-one.
+Subagents run ONE AT A TIME in queue order — never in parallel — so plan
+your spawns as an ordered pipeline. Never claim you cannot run
+subagents — you have the tools for it. A spawn accepts an optional
+per-subagent model override (spawn_agent model=...) — route grunt work
+to a fast model and the hard piece to the strongest one.
 
 DEEP WORK (FOCUS MODE)
 The user can arm /focus: you then receive CONTINUE turns automatically
@@ -104,25 +86,13 @@ WORKING STYLE
 
 
 # ---------------------------------------------------------------------------
-# SCOUT — read-only scout sub-agents
-# ---------------------------------------------------------------------------
-
-SCOUT = """You are a read-only scout sub-agent of FullAgent. You gather information only; you never modify anything. You have read-only tools: read_file, list_dir, file_info, search_files, glob_files. Use them to find real evidence before answering.
-
-Answer the given question concisely and factually in <= 120 words: names, paths, numbers, verdicts. No preamble, no filler, no speculation beyond what the evidence supports. If you cannot determine the answer, say so plainly.
-
-End your reply with a final line exactly in this form:
-Confidence: <0-100>%"""
-
-
-# ---------------------------------------------------------------------------
-# WORKER — parallel worker sub-agents (one template, per-role briefs)
+# WORKER — worker sub-agents (one template, per-role briefs)
 # ---------------------------------------------------------------------------
 
 WORKER = """You are {role_brief}
 
-You are one of up to {max_workers} workers running IN PARALLEL on the same machine. Rules:
-- Complete ONLY your assigned task; other workers handle the rest.
+You are a specialist worker sub-agent running on the same machine as the main agent. Rules:
+- Complete ONLY your assigned task; other workers handle the rest (after you finish — work is serialized).
 - Work fast and decisively: inspect, act, verify, finish.
 - Use your tools to gather real evidence before claiming anything.
 - If your task is ambiguous, do the most reasonable interpretation and note it.
@@ -205,15 +175,10 @@ def main() -> str:
     return MAIN
 
 
-def scout() -> str:
-    """A scout sub-agent's system prompt."""
-    return SCOUT
-
-
-def worker(role: str, max_workers: int) -> str:
+def worker(role: str) -> str:
     """A worker sub-agent's system prompt for the given role."""
     brief = ROLE_BRIEFS.get(role, ROLE_BRIEFS["coder"])
-    return WORKER.format(role_brief=brief, max_workers=max_workers)
+    return WORKER.format(role_brief=brief)
 
 
 def with_system(messages: list[dict], system: str) -> list[dict]:
@@ -258,7 +223,7 @@ def _fallback_digest() -> str:
     contracts (docstrings). Used only when project.txt is missing or
     empty, so MASTER always carries the real subsystem contracts."""
     import importlib
-    names = ["kernel", "memory", "goal", "judge", "swarm", "team",
+    names = ["kernel", "memory", "goal", "judge", "team", "crew",
              "autopilot", "router", "semantic", "speculate", "daemon",
              "healer", "skills", "council", "taint", "kgraph", "cov",
              "fuzz", "mutate", "nexus", "oracle", "snapshots"]
@@ -323,15 +288,15 @@ if __name__ == "__main__":
 
     # sanity: every builder returns a non-empty prompt, and with_system
     # always leaves the system prompt at position 0.
-    assert main() and scout()
+    assert main()
     for role in ROLE_BRIEFS:
-        assert worker(role, 8)
+        assert worker(role)
     msgs = [{"role": "user", "content": "hi"}]
     with_system(msgs, main())
     assert msgs[0]["role"] == "system" and msgs[0]["content"] == MAIN
-    with_system(msgs, scout())  # replaces, never duplicates
+    with_system(msgs, worker("coder"))  # replaces, never duplicates
     assert len([m for m in msgs if m["role"] == "system"]) == 1
-    assert msgs[0]["content"] == SCOUT
+    assert msgs[0]["content"] == worker("coder")
 
     # the extended MASTER prompt must embed the master specification.
     # With the full spec on disk it exceeds 130k chars; if the spec file

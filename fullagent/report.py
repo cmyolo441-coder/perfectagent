@@ -22,8 +22,8 @@ from .kernel import EventLog, fold
 INTERESTING = ("user.message", "assistant.message", "tool.call",
                "tool.result", "judge.verdict", "clause.proven",
                "clause.regressed", "goal.closed", "focus.stop",
-               "workflow.done", "crew.done", "team.report",
-               "swarm.report", "snapshot.taken", "autonomy.changed")
+               "workflow.done", "crew.done",
+               "snapshot.taken", "autonomy.changed")
 
 
 # ---------------------------------------------------------------------------

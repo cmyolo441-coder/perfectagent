@@ -11,13 +11,12 @@ Package layout:
     memory.py       Hippocampus: episodic memory + dead-end ledger
     goal.py         goal contracts with machine-checkable done-criteria
     judge.py        deterministic verification (no LLM judging)
-    swarm.py        parallel read-only scout sub-agents
-    team.py         parallel worker team (up to 8, real tools, write lock)
+    team.py         shared subagent substrate: roles, reports, write lock
     crew.py         persistent Codex-style subagents (spawn/send/wait/
-                    close/resume) — background lifecycle, living context
+                    close/resume) — SERIAL execution, one agent at a time
     workflows.py    saved multi-step pipelines — phased orchestration
     report.py       enterprise audit export (md/html) + forecasting
-    autopilot.py    self-routing brain: auto-enables team / goal / web
+    autopilot.py    self-routing brain: auto-enables goal / web
 
     v3 advanced subsystems (all event-sourced on the same kernel):
     router.py       smart model routing — cheapest capable model per task

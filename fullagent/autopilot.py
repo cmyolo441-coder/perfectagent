@@ -3,8 +3,6 @@
 The agent decides FOR ITSELF, before every turn, which powers the task
 needs — and enables them on its own:
 
-  * PARALLEL TEAM  — the request decomposes into independent subtasks
-                     -> dispatch up to 8 worker sub-agents at once.
   * GOAL MODE      — the request is a verifiable mission ("fix", "add",
                      "make X pass") -> auto-draft a machine-checkable
                      goal contract.
@@ -46,20 +44,8 @@ _QUESTION_STARTERS = (
     "do ", "does ", "can ", "kya", "kaun", "kab", "kahan", "kyu", "kaise",
 )
 
-# segment -> role keywords (checked in order; first hit wins)
-_ROLE_HINTS = (
-    ("researcher", ("search", "research", "find out", "look up", "what is",
-                    "what are", "latest", "compare", "information", "dhundo")),
-    ("tester", ("test", "run", "verify", "check", "build", "execute",
-                "install", "chalao", "check karo")),
-    ("reviewer", ("review", "audit", "inspect", "analyse", "analyze",
-                  "critique")),
-    ("coder", ("write", "create", "implement", "fix", "add", "build",
-               "edit", "refactor", "generate", "banao", "likho")),
-)
-
-_NUMBERED_ITEM = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s+", re.MULTILINE)
-# word-boundary match so "rate" never fires inside "generate"
+# segment-free trigger regex — word-boundary match so "rate" never
+# fires inside "generate"
 _WEB_TRIGGER_RE = re.compile(
     r"\b(?:" + "|".join(re.escape(t) for t in _WEB_TRIGGERS) + r")\b")
 
@@ -67,8 +53,6 @@ _WEB_TRIGGER_RE = re.compile(
 @dataclass
 class RouteDecision:
     """What the AutoPilot enabled for this turn, and why."""
-    use_team: bool = False
-    tasks: list[dict] = field(default_factory=list)
     suggest_goal: bool = False
     goal_statement: str = ""
     goal_clauses: list[dict] = field(default_factory=list)
@@ -77,12 +61,10 @@ class RouteDecision:
 
     @property
     def active(self) -> bool:
-        return self.use_team or self.suggest_goal or self.use_web
+        return self.suggest_goal or self.use_web
 
     def summary(self) -> str:
         bits = []
-        if self.use_team:
-            bits.append(f"⚡ parallel team: {len(self.tasks)} workers")
         if self.suggest_goal:
             bits.append(f"⚡ goal mode: {len(self.goal_clauses)} clause(s) "
                         "auto-drafted")
@@ -118,19 +100,8 @@ class AutoPilot:
             d.reasons.append("real-time web: live-data trigger(s) "
                              + ", ".join(repr(h) for h in hits[:3]))
 
-        # 2. parallel team — independent subtasks detected
-        segments = self._decompose(text)
-        if len(segments) >= 2:
-            read_only = autonomy <= 1
-            for seg in segments[:8]:
-                d.tasks.append({"task": seg,
-                                "role": self._role_for(seg, read_only)})
-            d.use_team = True
-            d.reasons.append(f"parallel team: {len(segments)} independent "
-                             f"subtasks detected")
-
-        # 3. goal mode — a verifiable mission, not a question
-        if not goal_active and not is_question and not d.use_team:
+        # 2. goal mode — a verifiable mission, not a question
+        if not goal_active and not is_question:
             if any(v in low for v in _GOAL_VERBS):
                 d.suggest_goal = True
                 d.goal_statement = text.strip()[:100]
@@ -140,42 +111,11 @@ class AutoPilot:
 
         if d.active:
             self.log.append("autopilot.route",
-                            {"use_team": d.use_team,
-                             "team_size": len(d.tasks),
-                             "suggest_goal": d.suggest_goal,
+                            {"suggest_goal": d.suggest_goal,
                              "use_web": d.use_web,
                              "reasons": d.reasons},
                             actor="system")
         return d
-
-    # -- decomposition (rung 1) ----------------------------------------------
-
-    def _decompose(self, text: str) -> list[str]:
-        """Split a request into independent subtasks.
-
-        Explicit structure first (numbered/bulleted lists); otherwise
-        conjunction splits ('and also', 'aur', ';'). Segments shorter
-        than 12 chars are noise and get dropped."""
-        items = [m.strip() for m in _NUMBERED_ITEM.split(text) if m.strip()]
-        if len(items) >= 2:
-            # drop a leading intro line like "do these things:"
-            if len(items[0]) < 40 and ":" in text.split("\n")[0]:
-                items = items[1:]
-            return [i for i in items if len(i) >= 12][:8]
-
-        parts = re.split(r"\s+(?:and also|also|aur|;|, then)\s+",
-                         text, flags=re.IGNORECASE)
-        parts = [p.strip(" .,!?") for p in parts if p.strip()]
-        return [p for p in parts if len(p) >= 12][:8]
-
-    def _role_for(self, segment: str, read_only: bool) -> str:
-        low = segment.lower()
-        for role, hints in _ROLE_HINTS:
-            if any(h in low for h in hints):
-                if read_only and role == "coder":
-                    return "reviewer"  # no writes below autonomy L2
-                return role
-        return "analyst" if not read_only else "researcher"
 
     # -- goal drafting (rung 1-3) ----------------------------------------------
 
@@ -237,28 +177,14 @@ if __name__ == "__main__":
             log = EventLog(Path(td) / "autopilot-test.jsonl")
             ap = AutoPilot(log)
 
-            # parallel team: explicit numbered list
-            d = ap.route("1. research the latest python web frameworks\n"
-                         "2. write a hello flask app\n"
-                         "3. run the tests and verify", goal_active=False)
-            assert d.use_team and len(d.tasks) == 3, d
-            assert d.tasks[0]["role"] == "researcher", d.tasks
-            assert d.tasks[1]["role"] == "coder", d.tasks
-            assert d.tasks[2]["role"] == "tester", d.tasks
-
-            # conjunction split
-            d = ap.route("create a utils.py helper module and also write "
-                         "a test file for it", goal_active=False)
-            assert d.use_team and len(d.tasks) == 2, d
-
-            # goal mode: mission verb, no structure
+            # goal mode: mission verb
             d = ap.route("fix the login bug in auth.py", goal_active=False)
-            assert d.suggest_goal and not d.use_team, d
+            assert d.suggest_goal, d
             assert d.goal_clauses and d.goal_clauses[0]["id"] == "C1", d
 
             # questions never trigger goal mode
             d = ap.route("what is the best way to fix a login bug?",
-                         goal_active=False)
+                          goal_active=False)
             assert not d.suggest_goal, d
 
             # an active goal suppresses auto-drafting
@@ -267,10 +193,10 @@ if __name__ == "__main__":
 
             # real-time web triggers
             d = ap.route("what is the latest news about AI today?",
-                         goal_active=False)
+                          goal_active=False)
             assert d.use_web, d
             d = ap.route("tell me the current bitcoin price",
-                         goal_active=False)
+                          goal_active=False)
             assert d.use_web, d
 
             # plain chat: nothing enabled
@@ -280,25 +206,18 @@ if __name__ == "__main__":
             # disabled autopilot routes nothing
             ap.enabled = False
             d = ap.route("fix everything and also test everything please",
-                         goal_active=False)
+                          goal_active=False)
             assert not d.active, d
             ap.enabled = True
 
-            # read-only autonomy downgrades writer roles
-            d = ap.route("1. write a new module for parsing\n"
-                         "2. review the existing parser code",
-                         goal_active=False, autonomy=1)
-            assert d.tasks[0]["role"] != "coder", d.tasks
-
             # route events are sealed in the log
             st_events = [e for e in log.events()
-                         if e.type == "autopilot.route"]
+                          if e.type == "autopilot.route"]
             assert len(st_events) >= 1
 
             # summary renders
-            d = ap.route("1. research X in detail\n2. write Y module",
-                         goal_active=False)
-            assert "parallel team" in d.summary()
+            d = ap.route("build the parser module", goal_active=False)
+            assert "goal mode" in d.summary()
 
             print("AUTOPILOT SELF-TEST PASS")
 

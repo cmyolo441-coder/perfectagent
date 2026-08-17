@@ -13,8 +13,8 @@ Three cooperating mechanisms, all deterministic Python (rung 1):
                        from — a prompt that was never sealed cannot reach
                        a model.
 
-  PromptGate           The single door to the model. Every request —
-                       main agent, scout, worker — passes gate.dispatch(),
+   PromptGate           The single door to the model. Every request —
+                        main agent, worker — passes gate.dispatch(),
                        which guarantees messages[0] carries the sealed
                        prompt (byte-for-byte prefix) and seals a
                        prompt.dispatch lineage event. If the prompt is
@@ -63,15 +63,14 @@ class PromptVault:
     ran with is forever auditable. get() only ever returns sealed text —
     a prompt that was never sealed cannot reach a model."""
 
-    def __init__(self, log: EventLog, max_workers: int = 8) -> None:
+    def __init__(self, log: EventLog) -> None:
         self.log = log
         self._sealed: dict[str, str] = {}
         self._seal("main", systemprompt.main())
         self._seal("master", systemprompt.get("master"))
-        self._seal("scout", systemprompt.scout())
         for role in systemprompt.ROLE_BRIEFS:
             self._seal(f"worker:{role}",
-                       systemprompt.worker(role, max_workers))
+                       systemprompt.worker(role))
 
     def _seal(self, name: str, text: str) -> None:
         self._sealed[name] = text
@@ -86,7 +85,7 @@ class PromptVault:
     def resolve(self, name: str) -> str:
         """Sealed text for `name`, sealing on demand from systemprompt.py.
 
-        Already-sealed prompts (main, master, scout, worker:* — sealed at
+        Already-sealed prompts (main, master, worker:* — sealed at
         vault init) are served straight from the cache. Prompts registered
         at runtime (systemprompt.register) are sealed the first time they
         are requested — the vault stays the only source a model ever reads
@@ -272,9 +271,9 @@ class MastermindState:
 class Mastermind:
     """Vault + Gate + Composer, assembled over one EventLog."""
 
-    def __init__(self, log: EventLog, max_workers: int = 8) -> None:
+    def __init__(self, log: EventLog) -> None:
         self.log = log
-        self.vault = PromptVault(log, max_workers=max_workers)
+        self.vault = PromptVault(log)
         self.composer = CoherenceComposer()
         self.gate = PromptGate(log, self.vault, self.composer)
 
@@ -326,7 +325,6 @@ if __name__ == "__main__":
             # -- vault: every prompt sealed, fingerprints stable ------------
             assert "main" in mm.vault.names()
             assert "master" in mm.vault.names()
-            assert "scout" in mm.vault.names()
             assert "worker:coder" in mm.vault.names()
             assert mm.vault.verify("main", systemprompt.main())
             assert mm.vault.verify("main", systemprompt.main()
@@ -406,7 +404,7 @@ if __name__ == "__main__":
             assert s.dispatches == 6
             assert s.restorations == 4
             assert s.section_counts.get("goal") == 2
-            assert len(s.sealed) >= 8  # main, master, scout, 5 workers
+            assert len(s.sealed) >= 8  # main, master + worker:* prompts
             text = mm.format_status()
             assert "MASTERMIND" in text and "sealed prompts" in text
 

@@ -1,6 +1,6 @@
 """MARKET — the task market: specialists bid, the auctioneer awards.
 
-Squad assigns work by role; the Market assigns work by ECONOMICS.
+The Crew assigns work by role; the Market assigns work by ECONOMICS.
 Contract-Net Protocol, the real thing:
 
     announce    tasks hit the board; every eligible role examines each

@@ -5,8 +5,8 @@ dependencies) that streams the whole agent's world to a dark, animated
 single-page dashboard:
 
     /api/state      live snapshot: cost, tokens, tool calls, errors,
-                    goal, crew roster, squad runs, budget, branches,
-                    brain stats — one JSON, one poll
+                    goal, crew roster, budget, branches, brain stats —
+                    one JSON, one poll
     /api/events     the event river: every new kernel event since a seq
                     (the page polls and paints them as they seal)
     /api/timeline   the scrubber strip (Theater frames)
@@ -80,7 +80,7 @@ button:hover{background:#388bfd}
 <div class="grid" id="cards"></div>
 <div class="cols">
  <div class="panel"><h2>Event river — live</h2><div id="river"></div></div>
- <div><div class="panel"><h2>Crew / squad / brain</h2><div id="crew"
+  <div><div class="panel"><h2>Crew / brain</h2><div id="crew"
   class="muted">—</div></div>
  <div class="panel" style="margin-top:12px"><h2>Timeline scrubber</h2>
   <div id="tl"></div><div id="frame" class="muted" style="margin-top:8px">
@@ -97,7 +97,7 @@ async function pollState(){try{const r=await fetch('/api/state');
 const s=await r.json();const c=s.cards||{};
 $('cards').innerHTML=[['cost',s.cost],['tokens',s.tokens],
 ['tool calls',s.tool_calls],['errors',s.errors],['messages',s.messages],
-['files',s.files],['squad runs',s.squad_runs],['branches',s.branches]]
+['files',s.files],['crew agents',s.crew_agents],['branches',s.branches]]
 .map(([l,v])=>`<div class="card"><div class="v">${esc(v)}</div>
 <div class="l">${l}</div></div>`).join('');
 $('branch').textContent=' · '+s.branch;
@@ -170,7 +170,7 @@ class Tower:
                 "tool_calls": st.tool_calls, "errors": st.tool_errors,
                 "messages": len(st.messages),
                 "files": len(st.files_touched),
-                "squad_runs": len(st.squad_reports),
+                "crew_agents": len(crew),
                 "branches": len(self.log.branches()),
                 "crew": crew, "brain": brain_txt}
 

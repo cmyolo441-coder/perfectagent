@@ -11,7 +11,7 @@ optimizer passes — exactly like a query planner:
     prune      unreachable items die (dependencies that name no item,
                and everything transitively orphaned by them)
     layers     topological layering — items in a layer have no mutual
-               dependencies and run in one parallel wave
+               dependencies and run in one ordered wave
     cost       role-based cost estimates pick the cheapest viable role
                where the draft left one generic
     lockpass   write-exclusivity (I7): two items writing overlapping
@@ -64,7 +64,7 @@ def _item_key(item: dict) -> str:
 
 @dataclass
 class CompiledPlan:
-    """The optimized plan: waves of parallel work items."""
+    """The optimized plan: ordered waves of work items (executed serially)."""
     goal: str
     waves: list[list[dict]] = field(default_factory=list)
     dropped: list[dict] = field(default_factory=list)   # malformed/dupes
@@ -296,9 +296,10 @@ class IntentCompiler:
     # -- execution -------------------------------------------------------------
 
     def execute(self, plan: CompiledPlan) -> dict:
-        """Run the plan wave by wave — each wave's items run in parallel
-        through the executor; a wave's reports land before the next wave
-        starts (dependencies are satisfied by construction)."""
+        """Run the plan wave by wave — each wave's items run in order
+        through the executor (serially, one worker at a time); a wave's
+        reports land before the next wave starts (dependencies are
+        satisfied by construction)."""
         if self.executor is None:
             raise RuntimeError("no executor attached — plan compiled only")
         all_reports: list[dict] = []
@@ -324,7 +325,7 @@ class IntentCompiler:
 
     def format(self, plan: CompiledPlan) -> str:
         lines = [f"COMPILED PLAN — goal: {plan.goal}",
-                 f"{len(plan.items())} items · {len(plan.waves)} parallel "
+                 f"{len(plan.items())} items · {len(plan.waves)} ordered "
                  f"waves · est cost {plan.est_cost} · {plan.compile_ms}ms"
                  + (f" · {len(plan.dropped)} dropped" if plan.dropped
                     else "")]

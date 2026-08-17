@@ -89,7 +89,10 @@ class Daemon:
 
     def start(self, statement: str, tasks: list[str]) -> Mission:
         """Seal a new mission. Step ids are M1..Mn."""
-        mission_id = f"mission-{int(time.time() * 1000) % 100000:05d}"
+        # SPEED-EXPOSURE FIX: the old millisecond-clock id could collide
+        # when missions are started back-to-back (now that everything
+        # runs faster); seq is strictly monotonic, so this never can.
+        mission_id = f"mission-{self.log.head() + 1}"
         steps = [Step(id=f"M{i + 1}", task=t) for i, t in enumerate(tasks)]
         self.log.append("daemon.mission",
                         {"mission_id": mission_id, "statement": statement,

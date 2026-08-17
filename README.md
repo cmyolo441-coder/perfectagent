@@ -64,17 +64,12 @@ python main.py
   approaches land in a dead-end ledger and are blocked deterministically
 - **Judge** — claims are verified against reality with deterministic
   predicates (exit codes, file checks, regex) — never the model's own word
-- **Swarm** — fan out parallel read-only scout sub-agents; reports land in
-  the log without polluting the main context
-- **Team** — up to **8 professional worker sub-agents in parallel**
-  (researcher / coder / tester / reviewer / analyst), each with real tools
-  and a role brief. Reads fan out freely; writes serialise through one
-  global lock, so two workers can never mutate the world at once
-- **Crew** — Codex-style **persistent** subagents: `spawn_agent` launches
+- **Crew** — Codex-style **persistent** subagents: `spawn_agent` queues
   a background worker and returns instantly (the conversation stays
   responsive), `send_to_agent` iterates on its LIVING context,
   `wait_for_agents` collects results, `close_agent` / `resume_agent`
-  manage the lifecycle. Live progress streams in the prompt border.
+  manage the lifecycle. Subagents run **one at a time** through a serial
+  queue — never in parallel. Live progress streams in the prompt border.
   Every subagent accepts a **per-agent model override** (route grunt
   work to a fast model, the hard piece to the strongest one)
 - **Focus Mode** — deep work: `/focus 10` arms auto-continuation and the
@@ -86,7 +81,7 @@ python main.py
 - **Instant triage** — tool errors show the healer's root-cause
   classification right on the result line
 - **Workflows** — saved multi-step pipelines (`/workflow run ship`):
-  phased orchestration where steps in the same phase run in parallel,
+  phased orchestration that runs steps one at a time in phase order,
   each step is a real subagent, and optional `expect` predicates block
   the pipeline on failure
 - **Audit export** — `/export md|html` writes a self-contained session
@@ -106,9 +101,9 @@ python main.py
   usage (`ctx 37%`), and approvals show a real unified diff before you
   press `y`
 - **AutoPilot** — the agent decides **for itself** what each turn needs and
-  enables it automatically: parallel team when subtasks are independent,
-  goal mode when the request is a verifiable mission, real-time web when
-  the question needs live data. Every decision is logged and shown live
+  enables it automatically: goal mode when the request is a verifiable
+  mission, real-time web when the question needs live data. Every decision
+  is logged and shown live
 - **Real-time web** — `web_search` hits DuckDuckGo with a Bing fallback and
   stamps every result with its retrieval time, so the agent answers with
   current facts, not stale knowledge
@@ -155,16 +150,12 @@ Event-log commands:
 - `/judge <type> <arg>` — deterministic check (`exit_code`, `file_exists`,
   `file_contains`, `file_matches`, `command_output_contains`), or pass a full
   JSON predicate
-- `/scout <q1> | <q2> | …` — parallel read-only scout sub-agents
-- `/team <task1> | <task2> | …` — parallel worker team (up to 8); prefix a
-  task with `role:` to pin it (`researcher:` `coder:` `tester:` `reviewer:`
-  `analyst:`)
 - `/auto [on|off|status]` — the AutoPilot self-routing brain (on by default)
 - `/prompt [main|master|list]` — choose the system prompt: `main` (compact)
   or `master` (the extended 130k+ specification prompt)
 - `/mastermind` — the prompt-coherence ledger (sealed prompts, gate,
   composed context, lineage)
-- `/dashboard` — live observability: cost, goal, agents, router, spec,
+- `/dashboard` — live observability: cost, goal, crew, router, spec,
   memory, health in one screen
 - `/router` — smart model routing: decisions + savings vs always-strongest
 - `/spec` — speculative execution: prefetch stats + hit-rate
@@ -233,9 +224,10 @@ fullagent/
   memory.py        episodic memory + dead-end ledger (fold-derived)
   goal.py          goal contracts with machine-checkable done-criteria
   judge.py         deterministic verification predicates (no LLM judging)
-  swarm.py         parallel read-only scout sub-agents
-  team.py          parallel worker team (up to 8, role-based, write lock)
-  autopilot.py     self-routing: auto team / goal mode / real-time web
+  team.py          shared subagent substrate — roles, reports, retry, global write lock
+  crew.py          persistent Codex-style subagents — serial execution, one at a time
+  workflows.py     saved multi-step pipelines — phased orchestration (serial steps)
+  autopilot.py     self-routing: auto goal mode / real-time web
   router.py        smart model routing — cheapest capable model per task
   semantic.py      semantic vector memory — meaning-based recall
   speculate.py     speculative execution — prefetch read-only tool calls
@@ -255,19 +247,18 @@ fullagent/
 
 The event log lives at `~/.fullagent/eventlog.jsonl` (override the directory
 with `FULLAGENT_HOME`). Each module ships a self-test:
-`python -m fullagent.kernel` (and `.memory`, `.goal`, `.judge`, `.swarm`,
-`.team`, `.autopilot`, `.systemprompt`, `.mastermind`, `.router`,
+`python -m fullagent.kernel` (and `.memory`, `.goal`, `.judge`,
+`.team`, `.crew`, `.autopilot`, `.systemprompt`, `.mastermind`, `.router`,
 `.semantic`, `.speculate`, `.dashboard`, `.daemon`, `.healer`, `.skills`,
 `.council`, `.taint`, `.kgraph`, `.cov`, `.fuzz`, `.mutate`).
 
 ## System prompts — one file, one delivery path
 
 Every system prompt the model ever sees lives in **`fullagent/systemprompt.py`**
-and nowhere else. `agent.py`, `swarm.py` and `team.py` contain **no inline
-prompt strings** — they only import from that file. Two structural guarantees:
+and nowhere else — the module imports it. Two structural guarantees:
 
 - **Single source of truth.** Edit a prompt in `systemprompt.py` and it
-  changes everywhere at once — main agent, scouts, and all worker roles.
+  changes everywhere at once — main agent and all worker roles.
 - **One delivery path.** Every message list is built through
   `systemprompt.with_system()`, which guarantees the correct prompt sits at
   position 0 before any request is sent. A model can never be called without
@@ -319,7 +310,7 @@ from the log.
 | **router.py** | The cost brain. A deterministic difficulty classifier (reasoning, code density, tooling, length) scores each task; a capability/cost table scores the models; the cheapest model that clears the task's difficulty + a quality margin wins. Tool-needing tasks never land on no-tool models; a pinned model that can't do the job is escalated past. Savings vs always-using-the-strongest are auditable. | `/router` |
 | **semantic.py** | Hippocampus 2.0. Every episode, fact and dead-end is embedded via signed feature hashing (stdlib only, no numpy) and recalled by cosine similarity — "how did we solve a similar problem before?", including remembering what *failed*. The index is a pure projection of the log and refreshes itself. Recall is injected into the memory context section each turn. | `/recall <q>` |
 | **speculate.py** | While the model thinks, the agent predicts the read-only calls it will likely make (paths in your message, search verbs, siblings of recent reads) and prefetches them in a background pool. When the model actually asks, the result is served from cache — a hit instead of an execution. Only whitelisted read-only tools can ever be prefetched; a speculative write is structurally impossible. | `/spec` |
-| **dashboard.py** | The X-ray: cost, tokens, goal progress bar, sub-agent reports, routing spend, speculation hit-rate, memory counts, verdicts, loop alerts and budget events — one screen, always agreeing with the kernel because it is a fold. | `/dashboard` |
+| **dashboard.py** | The X-ray: cost, tokens, goal progress bar, crew reports, routing spend, speculation hit-rate, memory counts, verdicts, loop alerts and budget events — one screen, always agreeing with the kernel because it is a fold. | `/dashboard` |
 | **daemon.py** | Mission Control. A mission is a queue of steps advanced one tick at a time; every tick checkpoints, so a restart resumes from the last checkpoint (at most one in-flight tick is lost). A step that exhausts its retries BLOCKS the mission visibly — never silently skipped. Wake conditions are deterministic fold predicates. | `/mission` |
 | **healer.py** | When a tool fails, the healer captures the error, classifies it against a root-cause taxonomy (16 patterns; unknown is honest, never guessed), and seals the lesson. With a fixer + recheck attached it runs the full loop: fix → re-run the original check → only a green re-run counts as healed. Every tool error in the agent loop is captured automatically. | `/heal` |
 | **skills.py** | The self-evolving tool author. A new skill (Python function) passes four gates before it can run: parse → shape (entry fn + docstring) → safety (AST scan: no subprocess/eval/exec/forbidden imports/dunder access/globals) → its own shipped test cases. Passing skills persist to `~/.fullagent/skills/` and register as live tools; failures are sealed with the exact reason. | `/skills` |

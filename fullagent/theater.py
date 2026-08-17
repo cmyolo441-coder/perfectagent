@@ -209,7 +209,7 @@ def _summary(ev) -> str:
         return str(d.get("statement", ""))[:100]
     if ev.type == "fact.learned":
         return str(d.get("fact", ""))[:100]
-    if ev.type == "team.report":
+    if ev.type == "crew.done":
         return f"[{d.get('role', '')}] {str(d.get('summary', ''))[:80]}"
     return ""
 

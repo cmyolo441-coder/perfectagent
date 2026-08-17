@@ -248,10 +248,7 @@ SLASH_COMMANDS = [
     ("/replay", "replay the session log as a film (text)"),
     ("/memory", "recent episodes + dead-end ledger"),
     ("/judge", "deterministic check — /judge <type> <json-or-args>"),
-    ("/scout", "fan out read-only scouts — /scout q1 | q2 | q3"),
-    ("/team", "parallel worker team (up to 8) — /team task1 | task2 | …"),
-    ("/squad", "8 advanced specialists in parallel — /squad <project goal>"),
-    ("/compile", "intent compiler: goal → optimized parallel waves"),
+    ("/compile", "intent compiler: goal → optimized ordered waves"),
     ("/evolve", "evolve a role brief — /evolve [role|rollback <role>]"),
     ("/brain", "cognitive memory — /brain <query>|sleep|stats"),
     ("/merge", "semantic timeline merge — /merge <branchA> <branchB>"),
@@ -452,8 +449,10 @@ class UI:
         self._spinner_i = 0
         self._spinner_on = False
         self._cancel_flag = threading.Event()
-        self._stream_lock = threading.Lock()
         self._last_flush = 0.0
+        # SPEED: cached terminal size (queried at most twice a second)
+        self._width_cache: int | None = None
+        self._width_cache_ts = 0.0
 
         # approval state
         self._approve_request: tuple[Tool, dict, threading.Event] | None = None
@@ -489,11 +488,18 @@ class UI:
         return e
 
     def _width(self) -> int:
+        # SPEED: terminal size changes rarely; the query runs at most twice
+        # a second (the streaming preview asks for it on every token chunk)
+        now = time.time()
+        if self._width_cache is not None and now - self._width_cache_ts < 0.5:
+            return self._width_cache
         try:
             cols = get_app().output.get_size().columns
         except Exception:
             cols = shutil.get_terminal_size((100, 24)).columns
-        return max(60, cols)
+        self._width_cache = max(60, cols)
+        self._width_cache_ts = now
+        return self._width_cache
 
     def _invalidate(self) -> None:
         try:
@@ -1020,12 +1026,6 @@ class UI:
             self._cmd_memory()
         elif cmd == "/judge":
             self._cmd_judge(arg)
-        elif cmd == "/scout":
-            self._cmd_scout(arg)
-        elif cmd == "/team":
-            self._cmd_team(arg)
-        elif cmd == "/squad":
-            self._cmd_squad(arg)
         elif cmd == "/compile":
             self._cmd_compile(arg)
         elif cmd == "/evolve":
@@ -1467,8 +1467,6 @@ class UI:
         if st.verdicts:
             passed = sum(1 for v in st.verdicts if v.get("passed"))
             lines.append(f"judge verdicts: {passed}/{len(st.verdicts)} passed")
-        if st.swarm_reports:
-            lines.append(f"scout reports: {len(st.swarm_reports)}")
         if st.episodes:
             lines.append(f"memory episodes: {len(st.episodes)}")
         self.print_info("\n".join(lines), C["cyan"])
@@ -1732,87 +1730,14 @@ class UI:
 
         threading.Thread(target=run, daemon=True).start()
 
-    def _cmd_scout(self, arg: str) -> None:
-        questions = [q.strip() for q in arg.split("|") if q.strip()]
-        if not questions:
-            self.print_error("usage: /scout <question1> | <question2> | …")
-            return
-        self.print_info(f"⠹ scouting {len(questions)} question(s)…", C["dim"])
-
-        def run():
-            reports = self.agent.swarm.scout(
-                questions, context=self.agent.scout_context())
-            self.console.print(Text(self.agent.swarm.format(reports),
-                                    style=C["fg"]))
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _cmd_team(self, arg: str) -> None:
-        """Dispatch a parallel worker team (up to 8) on explicit tasks.
-
-        /team <task1> | <task2> | …   — each task gets its own worker.
-        Prefix a task with 'role:' to pin a role, e.g.
-        'researcher: find the latest flask version'."""
-        from .team import MAX_WORKERS, ROLES
-        tasks: list[dict] = []
-        for piece in (p.strip() for p in arg.split("|")):
-            if not piece:
-                continue
-            role = None
-            for r in ROLES:
-                if piece.lower().startswith(r + ":"):
-                    role = r
-                    piece = piece[len(r) + 1:].strip()
-                    break
-            if piece:
-                tasks.append({"task": piece, "role": role})
-        if not tasks:
-            self.print_error("usage: /team <task1> | <task2> | …  "
-                             "(up to 8, optional 'role:' prefix)")
-            return
-        tasks = tasks[:MAX_WORKERS]
-        self.print_info(f"⚡ dispatching {len(tasks)} worker(s) in parallel…",
-                        C["pink"])
-
-        def run():
-            reports = self.agent.team.run(
-                tasks, context=self.agent.scout_context(),
-                read_only=self.agent.autonomy <= 1)
-            self.console.print(Text(self.agent.team.format(reports),
-                                    style=C["fg"]))
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _cmd_squad(self, arg: str) -> None:
-        """Launch the 8-specialist squad — eight advanced experts
-        (planner, architect, debugger, optimizer, refactorer, integrator,
-        documenter, devops) working the same project goal in parallel."""
-        goal = arg.strip()
-        if not goal:
-            self.print_error("usage: /squad <project-level goal>  — e.g. "
-                             "/squad overhaul the API layer and ship v2")
-            return
-        self.print_info("⚡ launching the 8-specialist squad (planner, "
-                        "architect, debugger, optimizer, refactorer, "
-                        "integrator, documenter, devops)…", C["pink"])
-
-        def run():
-            squad_run = self.agent.squad.run(
-                goal, context=self.agent.scout_context(),
-                read_only=self.agent.autonomy <= 1)
-            self.console.print(Text(self.agent.squad.format(squad_run),
-                                    style=C["fg"]))
-
-        threading.Thread(target=run, daemon=True).start()
-
     # -- v5 advanced subsystem commands ----------------------------------
 
     def _cmd_compile(self, arg: str) -> None:
-        """Intent Compiler: goal → optimized parallel waves → execute."""
+        """Intent Compiler: goal → optimized ordered waves → execute."""
         goal = arg.strip()
         if not goal:
             self.print_error("usage: /compile <goal>  — the compiler "
-                             "plans + executes it in parallel waves")
+                             "plans + executes it in ordered waves")
             return
         self.print_info("⚙ compiling…", C["pink"])
 
@@ -2224,7 +2149,7 @@ class UI:
         if sub == "on":
             ap.enabled = True
             self.print_info("✓ autopilot ON — the agent will auto-enable "
-                            "parallel team / goal mode / real-time web as "
+                            "goal mode / real-time web as "
                             "each turn needs them", C["green"])
         elif sub == "off":
             ap.enabled = False
@@ -2233,8 +2158,6 @@ class UI:
             state = "ON" if ap.enabled else "OFF"
             self.print_info(f"autopilot: {state}\n"
                             "  auto-enables, per turn:\n"
-                            "  ⚡ parallel team  — independent subtasks "
-                            "detected (up to 8 workers)\n"
                             "  ⚡ goal mode      — verifiable mission "
                             "detected (auto-drafted contract)\n"
                             "  ⚡ real-time web  — live-data question "
@@ -2582,58 +2505,73 @@ class UI:
         self._cancel_flag.clear()
         self._set_status("thinking…")
         self._start_spinner()
+        self._last_preview_ts = 0.0
+        self._preview_pending = False
         streamed = {"n": 0}
-        stream_buf: list[str] = []
+        # SPEED: single tail string — appending a token is O(1), never a
+        # re-join of the whole stream (that was quadratic on long replies)
+        stream_tail = {"t": ""}
         render_md = bool(self.cfg.extra.get("render_markdown", False))
         md_buf: list[str] = []
+        md_len = {"n": 0}
 
         def on_token(piece: str):
             streamed["n"] += len(piece)
+            now = time.time()
+            if now - self._last_preview_ts < 0.03:
+                # SPEED: coalesce border redraws to ~33fps — a long reply
+                # streams thousands of chunks; redrawing on every one
+                # wastes CPU and makes the box stutter
+                if render_md:
+                    md_buf.append(piece)
+                    md_len["n"] += len(piece)
+                else:
+                    stream_tail["t"] += piece
+                self._preview_pending = True
+                return
+            self._last_preview_ts = now
+            self._preview_pending = False
             if render_md:
                 # markdown mode: nothing raw hits the console — the live
                 # preview runs in the box border, the finished reply is
                 # printed once, rendered as rich Markdown.
-                with self._stream_lock:
-                    md_buf.append(piece)
-                    joined = "".join(md_buf)
+                md_buf.append(piece)
+                md_len["n"] += len(piece)
                 maxw = self._width() - 26
-                preview = joined.strip("\n")
-                if len(preview) > maxw:
-                    preview = preview[-maxw:]
+                if md_len["n"] <= maxw:
+                    preview = "".join(md_buf).strip("\n")
+                else:
+                    preview = ("".join(md_buf))[-maxw:].strip("\n")
                 self._set_status(preview if preview else "writing…")
                 return
             # patch_stdout can only interleave output safely when every
             # write ends in a newline, so emit complete lines here and keep
             # the partial line as a live preview inside the box border.
-            with self._stream_lock:
-                stream_buf.append(piece)
-                joined = "".join(stream_buf)
-                if "\n" in joined:
-                    before, _, rem = joined.rpartition("\n")
-                    self.console.print(Text(before), soft_wrap=True)
-                    stream_buf[:] = [rem]
-                    joined = rem
-                maxw = self._width() - 26
-                preview = joined.strip("\n")
-                if len(preview) > maxw:
-                    preview = preview[-maxw:]
-                self._set_status(preview if preview else "writing…")
+            tail = stream_tail["t"] + piece
+            if "\n" in tail:
+                before, _, rem = tail.rpartition("\n")
+                self.console.print(Text(before), soft_wrap=True)
+                tail = rem
+            stream_tail["t"] = tail
+            maxw = self._width() - 26
+            preview = tail.strip("\n")
+            if len(preview) > maxw:
+                preview = preview[-maxw:]
+            self._set_status(preview if preview else "writing…")
 
         def on_reasoning(piece: str):
             self._set_status("reasoning…")
 
         def on_tool_call(ev: ToolEvent):
-            with self._stream_lock:
-                rem = "".join(stream_buf).strip("\n")
-                stream_buf.clear()
-                if rem:
-                    self.console.print(Text(rem), soft_wrap=True)
+            rem = stream_tail["t"].strip("\n")
+            stream_tail["t"] = ""
+            if rem:
+                self.console.print(Text(rem), soft_wrap=True)
             self.console.print(self._tool_call_line(ev))
             self._set_status(f"running {ev.name}…")
 
         def on_tool_update(ev: ToolEvent):
-            if ev.name in ("spawn_subagents", "spawn_scouts",
-                           "wait_for_agents") and ev.status == "done":
+            if ev.name == "wait_for_agents" and ev.status == "done":
                 # subagent reports deserve a real panel, not one line
                 self.console.print(self._subagent_panel(ev))
             else:
@@ -2647,8 +2585,6 @@ class UI:
                 self._set_status(f"calling {s[5:]}…")
             elif s.startswith("running:"):
                 self._set_status(f"running {s[8:]}…")
-            elif s.startswith("team:"):
-                self._set_status(f"⚡ {s[5:]} workers running in parallel…")
             else:
                 self._set_status(s)
 
@@ -2668,13 +2604,12 @@ class UI:
         except Exception as e:  # noqa: BLE001 — never kill the UI thread
             self.print_error(f"{type(e).__name__}: {e}")
         finally:
-            with self._stream_lock:
-                rem = "".join(stream_buf).strip("\n")
-                stream_buf.clear()
-                if rem:
-                    self.console.print(Text(rem), soft_wrap=True)
-                else:
-                    self.console.print()
+            rem = stream_tail["t"].strip("\n")
+            stream_tail["t"] = ""
+            if rem:
+                self.console.print(Text(rem), soft_wrap=True)
+            else:
+                self.console.print()
             self._stop_spinner()
             self._busy = False
             self._set_status("")
@@ -2893,7 +2828,6 @@ class UI:
             row("/replay", "replay the session log as a film"),
             row("/memory", "episodes + dead-end ledger"),
             row("/judge", "deterministic check (exit_code, file_exists, …)"),
-            row("/scout", "parallel read-only scouts — /scout q1 | q2"),
             row("/new", "fresh conversation"),
             row("/history", "browse previous turns"),
             row("/save", "save session to disk"),
@@ -2957,7 +2891,7 @@ class UI:
         logo.append(f" v{__version__}", style=f"bold {C['pink']}")
         logo.append("  ·  advanced terminal AI agent", style=C["dim"])
         logo.append("\n")
-        logo.append("event-sourced kernel · goal contracts · parallel crew · "
+        logo.append("event-sourced kernel · goal contracts · persistent crew · "
                     "self-healing", style=C["dim"])
         self.console.print(Panel(logo, width=width,
                                  border_style=C["border"], padding=(0, 1)))
@@ -2985,7 +2919,7 @@ class UI:
         hints.append("Ctrl+E", style=f"bold {C['cyan']}")
         hints.append(" effort · ", style=C["dim"])
         hints.append("/crew", style=f"bold {C['pink']}")
-        hints.append(" parallel subagents", style=C["dim"])
+        hints.append(" background subagents", style=C["dim"])
         self.console.print(hints)
         self.console.print()
 
@@ -3037,10 +2971,8 @@ class UI:
         return t
 
     def _subagent_panel(self, ev: ToolEvent) -> Panel:
-        """Render a parallel-subagent tool result as a bordered panel."""
-        title = {"spawn_subagents": "⚡ PARALLEL WORKERS",
-                 "spawn_scouts": "⚡ PARALLEL SCOUTS",
-                 "wait_for_agents": "⚡ CREW RESULTS"}.get(ev.name,
+        """Render a subagent tool result as a bordered panel."""
+        title = {"wait_for_agents": "⚡ CREW RESULTS"}.get(ev.name,
                                                           "⚡ SUBAGENTS")
         color = C["green"] if ev.status == "done" else C["red"]
         body = Text(ev.result[:6000], style=C["fg"])

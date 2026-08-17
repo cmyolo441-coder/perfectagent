@@ -79,12 +79,10 @@ from .semantic import SemanticMemory
 from .skills import SkillForge
 from .snapshots import SnapshotStore
 from .speculate import Speculator, SPECULATIVE_TOOLS
-from .squad import Squad
 from .race import RacingUniverses
-from .swarm import Swarm
 from .synth import ProgramSynthesizer, SynthSpec, default_generator
 from .taint import StaticAnalyzer
-from .team import Team, parse_worker_final
+from .team import MAX_SUMMARY_CHARS, WorkerReport, parse_worker_final
 from .theater import Theater
 from .tools import RISK_CONFIRM, Tool, build_registry, parse_tool_arguments
 from .tower import Tower
@@ -227,10 +225,6 @@ class Agent:
         self.memory = Hippocampus(self.log)
         self.judge = Judge(self.log)
         self.goal = GoalContract(self.log, judge=self.judge)
-        self.swarm = Swarm(self.log, self.provider, self.model, self.effort,
-                           mastermind=self.mastermind)
-        self.squad = Squad(self.log, self.provider, self.model, self.effort,
-                           mastermind=self.mastermind)
         # v5 advanced subsystems — same kernel, same discipline
         self.brain = Brain(self.log, config.APP_DIR / "brain.json")
         self.compiler = IntentCompiler(
@@ -280,8 +274,6 @@ class Agent:
         })
         self.attention = AttentionEconomy(self.log)
         self.fabric = KnowledgeFabric(self.log)
-        self.team = Team(self.log, self.provider, self.model, self.effort,
-                         mastermind=self.mastermind)
         self.crew = Crew(self.log, self.provider, self.model, self.effort,
                          mastermind=self.mastermind)
         self.autopilot = AutoPilot(self.log)
@@ -313,7 +305,7 @@ class Agent:
 
         self.autonomy = 3
         # live status pipe for the current turn (set in run_turn) — lets
-        # long-running tools (team/crew) stream progress into the UI border
+        # long-running tools (crew) stream progress into the UI border
         self._turn_status: Callable[[str], None] | None = None
         # Focus Mode (deep work): distance history drives stall detection
         self._focus_history: list[float] = []
@@ -330,9 +322,15 @@ class Agent:
         self._compact_digests: list[str] = []  # knowledge kept on compaction
         self._error_counts: dict[str, int] = {}
         self._file_hashes: dict[str, list[str]] = {}  # oscillation history
+        # SPEED: cached tool schemas — rebuilt only when the registry size
+        # changes (was re-serialized before every model call)
+        self._schemas_cache: list[dict] | None = None
+        self._schemas_tool_count = -1
+        # SPEED: compaction gate — the full token re-estimate only runs
+        # after ~15% conversation growth, not before every model call
+        self._compact_check_chars = 0
         self._register_code_tools()
         self._register_v4_tools()
-        self._register_subagent_tools()
         self._register_crew_tools()
         self._register_advanced_tools()
         self._register_persisted_skills()
@@ -454,7 +452,17 @@ class Agent:
     def _tool_schemas(self) -> list[dict] | None:
         if not self.model.supports_tools:
             return None
-        return [t.openai_schema() for t in self.tools.values()]
+        # SPEED: the schema list is rebuilt only when the registry changes
+        # (new tools/skills) — it used to be re-serialized before EVERY
+        # model call inside a turn.
+        n = len(self.tools)
+        if (self._schemas_cache is not None
+                and self._schemas_tool_count == n):
+            return self._schemas_cache
+        schemas = [t.openai_schema() for t in self.tools.values()]
+        self._schemas_cache = schemas
+        self._schemas_tool_count = n
+        return schemas
 
     def run_turn(self, user_text: str,
                  on_token: Callable[[str], None],
@@ -474,7 +482,7 @@ class Agent:
         self._failed_over = False
 
         # AUTOPILOT: the agent decides for itself which powers this turn
-        # needs — parallel team, goal mode, real-time web — and enables
+        # needs — goal mode, real-time web — and enables
         # them on its own. Every decision is logged and surfaced.
         route = self.autopilot.route(user_text,
                                      self.goal.status().active,
@@ -483,8 +491,6 @@ class Agent:
             on_route(route)
         if route.suggest_goal:
             self._autopilot_goal(route)
-        if route.use_team:
-            self._autopilot_team(route, on_status)
 
         # refresh the system document through the Mastermind gate — the
         # sealed prompt is guaranteed at position 0, live context sections
@@ -656,15 +662,25 @@ class Agent:
           2. drop the oldest user→(assistant+tool results) turns as whole
              units so tool_call / tool-response pairing is never broken,
           3. last resort — truncate EVERY tool output and trim the oldest
-             assistant messages.
+              assistant messages.
         Only the model-visible context shrinks — the event log keeps
-        everything, so nothing is ever lost."""
+        everything, so nothing is ever lost.
+
+        SPEED: the expensive token estimate (a JSON dump of the whole
+        conversation) runs only when the conversation has measurably
+        grown since the last check — the cheap char-count is the gate."""
         schemas = self._tool_schemas()
         schema_tokens = (estimate_tokens(schemas, self.model.id)
                          if schemas else 0)
         budget = self._fit_budget()
-        if (estimate_tokens(self.messages, self.model.id)
-                + schema_tokens <= budget):
+        chars = self._messages_chars()
+        if self._compact_check_chars > 0 and \
+                chars <= self._compact_check_chars * 1.15:
+            return  # not yet grown enough to justify a full re-estimate
+        fits = (estimate_tokens(self.messages, self.model.id)
+                + schema_tokens <= budget)
+        self._compact_check_chars = max(chars, 1)
+        if fits:
             return
         dropped = self._compact_old_tools()
         while (estimate_tokens(self.messages, self.model.id)
@@ -680,6 +696,7 @@ class Agent:
             self._compact_old_tools(keep=0)
             self._trim_oldest_assistant(budget - schema_tokens)
         if dropped:
+            self._compact_check_chars = 0  # force re-estimate next time
             self.log.append("context.compacted",
                             {"messages": len(self.messages),
                              "units": dropped,
@@ -687,6 +704,23 @@ class Agent:
                              "est_tokens": estimate_tokens(self.messages,
                                               self.model.id)},
                             actor="kernel")
+
+    def _messages_chars(self) -> int:
+        """Cheap conversation size proxy (no JSON dump): sum of content
+        lengths plus tool-call argument sizes. Gate for the expensive
+        token estimate."""
+        n = 0
+        for m in self.messages:
+            c = m.get("content")
+            if c:
+                n += len(c)
+            tcs = m.get("tool_calls")
+            if tcs:
+                for tc in tcs:
+                    fn = tc.get("function") or {}
+                    n += len(fn.get("name", "")) + len(
+                        fn.get("arguments") or "")
+        return n
 
     def _trim_oldest_assistant(self, budget: int) -> None:
         """Shrink the oldest assistant messages (they are the least
@@ -801,38 +835,6 @@ class Agent:
             self.goal.set_goal(route.goal_statement, route.goal_clauses)
         except GoalContractError:
             return
-
-    def _autopilot_team(self, route: RouteDecision,
-                        on_status: Callable[[str], None]) -> None:
-        """Dispatch the parallel worker team. Reports land in the log and
-        are folded into memory so the main turn can build on them."""
-        read_only = self.autonomy <= 1
-        on_status(f"team:{len(route.tasks)}")
-
-        def _progress(finished: int, total: int, report) -> None:
-            icon = "✓" if report.status == "done" else (
-                "◐" if report.status == "blocked" else "✗")
-            on_status(f"⚡ team {finished}/{total} · {report.role} {icon}")
-
-        reports = self.team.run(route.tasks,
-                                context=self.scout_context(),
-                                read_only=read_only,
-                                on_progress=_progress)
-        # fold the results into episodic memory for the main turn
-        for r in reports:
-            if r.status == "done" and r.summary:
-                self.log.append("fact.learned",
-                                {"fact": f"[{r.role}] {r.task} -> "
-                                         f"{r.summary[:300]}",
-                                 "kind": "team"})
-        total_in = sum(r.tokens_in for r in reports)
-        total_out = sum(r.tokens_out for r in reports)
-        if total_in or total_out:
-            self.log.append("cost.incurred",
-                            {"usd": 0.0, "tokens_in": total_in,
-                             "tokens_out": total_out,
-                             "model": self.model.id, "team": True},
-                            actor="system")
 
     def _emit_cost(self, usage: dict | None) -> None:
         if not usage:
@@ -1056,7 +1058,7 @@ class Agent:
 
     def _push_status(self, text: str) -> None:
         """Stream a live status line into the current turn's UI (if any).
-        Used by long-running tools (team/crew) so parallel work is never
+        Used by long-running tools (crew) so subagent work is never
         invisible."""
         cb = self._turn_status
         if cb is None:
@@ -1709,164 +1711,10 @@ class Agent:
                 "required": ["path", "function"]},
             fuzz_target, risk=RISK_CONFIRM)
 
-    # -- subagent tools (§16) ----------------------------------------------------
-
-    def _register_subagent_tools(self) -> None:
-        """Give the model REAL tools to spawn subagents on demand.
-
-        Without these the model can only ever work alone — the Team and
-        Swarm machinery existed but was unreachable from the model (only
-        AutoPilot heuristics could trigger it). Now the model can decide
-        for itself to fan work out to parallel subagents, exactly like a
-        lead engineer delegating to a team. Both tools run REAL
-        subagents: real model calls, real tool loops, in parallel
-        threads — and return compact structured reports."""
-        team = self.team
-        swarm = self.swarm
-        squad = self.squad
-
-        def spawn_subagents(tasks: list, read_only: bool = False) -> str:
-            """Run one worker subagent per task, IN PARALLEL (up to 8).
-
-            Each task is {"task": "...", "role": "coder|researcher|
-            tester|reviewer|analyst"}. Workers are real agents: they
-            read, search, run commands, and (builders) write files —
-            writes serialise through one global lock. Each worker
-            collapses into a compact report; nothing pollutes this
-            conversation."""
-            if not isinstance(tasks, list) or not tasks:
-                return ("ERROR: tasks must be a non-empty list of "
-                        '{"task": "...", "role": "..."} objects')
-            clean: list[dict] = []
-            for t in tasks[:8]:
-                if isinstance(t, dict) and str(t.get("task", "")).strip():
-                    entry = {"task": str(t["task"]).strip(),
-                             "role": str(t.get("role", "")).strip()}
-                    if str(t.get("model", "")).strip():
-                        entry["model"] = str(t["model"]).strip()
-                    clean.append(entry)
-            if not clean:
-                return "ERROR: no valid tasks found in the list"
-            ro = read_only or self.autonomy <= 1
-            self._push_status(f"⚡ team 0/{len(clean)} · launching…")
-
-            def _team_progress(finished: int, total: int, report) -> None:
-                icon = "✓" if report.status == "done" else (
-                    "◐" if report.status == "blocked" else "✗")
-                self._push_status(
-                    f"⚡ team {finished}/{total} · {report.role} {icon}")
-
-            reports = team.run(clean, context=self.scout_context(),
-                               read_only=ro, on_progress=_team_progress)
-            return team.format(reports)
-
-        def spawn_scouts(questions: list) -> str:
-            """Run one read-only scout subagent per question, IN PARALLEL.
-
-            Scouts only gather information (read_file, list_dir,
-            search_files, glob_files, file_info) — they never modify
-            anything. Use this to research several things at once
-            without bloating this conversation; each scout returns a
-            short answer + confidence."""
-            if not isinstance(questions, list) or not questions:
-                return "ERROR: questions must be a non-empty list of strings"
-            qs = [str(q).strip() for q in questions[:8] if str(q).strip()]
-            if not qs:
-                return "ERROR: no valid questions found in the list"
-            self._push_status(f"⚡ scouts 0/{len(qs)} · launching…")
-
-            def _scout_progress(finished: int, total: int, report) -> None:
-                icon = "✓" if report.ok else "✗"
-                self._push_status(f"⚡ scouts {finished}/{total} {icon}")
-
-            reports = swarm.scout(qs, context=self.scout_context(),
-                                  on_progress=_scout_progress)
-            return swarm.format(reports)
-
-        def run_squad(goal: str, read_only: bool = False) -> str:
-            """Run ALL EIGHT advanced specialists in parallel on ONE goal.
-
-            The squad is a full engineering org thrown at a milestone:
-            planner, architect, debugger, optimizer, refactorer,
-            integrator, documenter, devops — every one a REAL subagent
-            with its own mandate, tools and context, all running
-            simultaneously on the same project. Reads fan out; writes
-            serialise through one global lock; files touched by more
-            than one writer are flagged for reconciliation. Returns a
-            compact digest of all eight reports."""
-            goal = str(goal or "").strip()
-            if not goal:
-                return "ERROR: goal must be a non-empty string"
-            ro = read_only or self.autonomy <= 1
-            self._push_status("⚡ squad 0/8 · launching specialists…")
-
-            def _squad_progress(finished: int, total: int, report) -> None:
-                icon = "✓" if report.status == "done" else (
-                    "◐" if report.status == "blocked" else "✗")
-                self._push_status(
-                    f"⚡ squad {finished}/{total} · {report.role} {icon}")
-
-            run = squad.run(goal, context=self.scout_context(),
-                            read_only=ro, on_progress=_squad_progress)
-            return squad.format(run)
-
-        self.tools["run_squad"] = Tool(
-            "run_squad",
-            "Launch the 8-SPECIALIST SQUAD — eight advanced experts "
-            "(planner, architect, debugger, optimizer, refactorer, "
-            "integrator, documenter, devops) working the SAME project in "
-            "PARALLEL, each in its own lane. Real model calls, real "
-            "tools, all at once. Use this for BIG multi-faceted jobs: "
-            "'overhaul this project', 'prepare a release', 'fix and "
-            "harden the whole codebase'. Returns every specialist's "
-            "report plus write-conflict warnings. Set read_only=true to "
-            "make the whole squad analysis-only.",
-            {"type": "object", "properties": {
-                "goal": {"type": "string",
-                         "description": "the project-level goal all "
-                                        "eight specialists attack"},
-                "read_only": {"type": "boolean"}},
-                "required": ["goal"]},
-            run_squad)
-
-        self.tools["spawn_subagents"] = Tool(
-            "spawn_subagents",
-            "Spawn REAL parallel worker subagents (up to 8 at once) to do "
-            "independent parts of the job simultaneously. Each task is "
-            '{"task": "<what to do>", "role": "..."} — roles: coder, '
-            "researcher, tester, reviewer, analyst, architect, debugger, "
-            "optimizer, refactorer, documenter, devops, integrator, "
-            "planner. Workers really run — real model calls, real tools, "
-            "in parallel — and return compact reports. Use this whenever "
-            "a request splits into independent subtasks (e.g. 'build X, "
-            "test Y, document Z'). For a whole-project goal prefer "
-            "run_squad (all 8 advanced specialists at once). Set "
-            "read_only=true to forbid writes.",
-            {"type": "object", "properties": {
-                "tasks": {"type": "array", "items": {"type": "object"},
-                          "description": 'list of {"task","role"} objects'},
-                "read_only": {"type": "boolean"}},
-                "required": ["tasks"]},
-            spawn_subagents)
-        self.tools["spawn_scouts"] = Tool(
-            "spawn_scouts",
-            "Spawn parallel READ-ONLY scout subagents to research several "
-            "questions at once. Pass a list of question strings; each "
-            "scout investigates with read-only tools and returns a short "
-            "answer + confidence. Use this to gather information from "
-            "multiple places simultaneously without bloating this "
-            "conversation.",
-            {"type": "object", "properties": {
-                "questions": {"type": "array",
-                              "items": {"type": "string"}}},
-                "required": ["questions"]},
-            spawn_scouts)
-
     def _register_crew_tools(self) -> None:
         """Codex-style persistent subagents: spawn / send / wait / close /
-        resume. Unlike spawn_subagents (batch, blocking), crew agents run
-        in the BACKGROUND and keep their full conversation, so the main
-        loop stays responsive and follow-ups never start from zero."""
+        resume. Crew agents run in the BACKGROUND and keep their full
+        conversation, so follow-ups never start from zero."""
         crew = self.crew
 
         def spawn_agent(task: str, role: str = "coder", name: str = "",
@@ -1961,12 +1809,13 @@ class Agent:
         self.tools["spawn_agent"] = Tool(
             "spawn_agent",
             "Spawn ONE persistent background subagent (Codex-style). "
-            "Returns IMMEDIATELY with the agent id while it works in "
-            "parallel — you stay responsive. Roles: coder, researcher, "
-            "tester, reviewer, analyst. The agent keeps its full "
-            "conversation: follow up with send_to_agent, collect with "
-            "wait_for_agents. Use for independent workstreams you want "
-            "to iterate on, not fire-and-forget batches.",
+            "Returns IMMEDIATELY with the agent id while it runs "
+            "serially in the background queue — you stay responsive. "
+            "Agents run ONE AT A TIME, never in parallel. Roles: coder, "
+            "researcher, tester, reviewer, analyst. The agent keeps its "
+            "full conversation: follow up with send_to_agent, collect "
+            "with wait_for_agents. Use for independent workstreams you "
+            "want to iterate on, not fire-and-forget batches.",
             {"type": "object", "properties": {
                 "task": _STR,
                 "role": _STR,
@@ -2037,22 +1886,64 @@ class Agent:
         except Exception as e:
             return f"ERROR: {type(e).__name__}: {e}"
 
+    def _run_worker_serial(self, tasks: list[dict],
+                           read_only: bool = False) -> list[WorkerReport]:
+        """Execute subagent tasks ONE AT A TIME through the Crew (serial).
+
+        The parallel Team fan-out no longer exists; every worker is a
+        persistent crew subagent run to completion in order. Returns
+        WorkerReports in input order; a failing worker yields an error
+        report, never an exception."""
+        reports: list[WorkerReport] = []
+        ro = read_only or self.autonomy <= 1
+        for t in tasks:
+            task = str(t.get("task", "") or "").strip()
+            role = str(t.get("role", "") or "").strip() or None
+            if not task:
+                continue
+            try:
+                agent = self.crew.spawn(
+                    task, role=role or "coder",
+                    context=self.scout_context(),
+                    read_only=ro,
+                    model_id=str(t.get("model", "") or ""))
+                while agent.state == "running":
+                    time.sleep(0.25)
+            except Exception as e:
+                reports.append(WorkerReport(
+                    task=task, role=role or "coder", status="error",
+                    error=f"{type(e).__name__}: {e}"))
+                continue
+            status = agent.state if agent.state in (
+                "done", "blocked", "error") else (
+                "error" if agent.error else "done")
+            reports.append(WorkerReport(
+                task=agent.task, role=agent.role, status=status,
+                summary=(agent.summary[:MAX_SUMMARY_CHARS]
+                         + " …[truncated]" if len(agent.summary)
+                         > MAX_SUMMARY_CHARS else agent.summary),
+                files_touched=list(agent.files_touched),
+                tool_calls=agent.tool_calls,
+                tokens_in=agent.tokens_in, tokens_out=agent.tokens_out,
+                error=agent.error, elapsed_ms=agent.elapsed_ms))
+        return reports
+
     def _daemon_step(self, task: str) -> str:
         """Run one daemon mission step. A step is executed as a read-only
-        scout-style probe by default — the daemon advances missions without
+        researcher probe by default — the daemon advances missions without
         mutating the world unless a write is explicitly part of the task.
         Returns 'ERROR: …' on failure so the daemon can retry/block."""
         try:
-            reports = self.swarm.scout([task], context=self.scout_context(),
-                                       timeout=120.0)
+            reports = self._run_worker_serial(
+                [{"task": task, "role": "researcher"}], read_only=True)
         except Exception as e:
             return f"ERROR: {type(e).__name__}: {e}"
         if not reports:
             return "ERROR: daemon step produced no report"
         r = reports[0]
-        if not r.ok:
+        if r.status == "error":
             return f"ERROR: {r.error or 'step failed'}"
-        return f"OK: {r.answer[:400]}"
+        return f"OK: {r.summary[:400]}"
 
     def _council_speaker(self, role: str, brief: str) -> str:
         """Produce one council position through the model (blocking, no
@@ -2070,12 +1961,11 @@ class Agent:
 
     def _compile_wave(self, wave: list[dict]) -> list[dict]:
         """Executor for the Intent Compiler: one compiled wave runs as a
-        real parallel Team batch."""
+        serial batch of crew subagents (one at a time)."""
         tasks = [{"task": it["task"], "role": it["role"]} for it in wave]
         self._push_status(f"⚙ compiled wave · {len(tasks)} item(s)")
-        reports = self.team.run(
-            tasks, context=self.scout_context(),
-            read_only=self.autonomy <= 1)
+        reports = self._run_worker_serial(
+            tasks, read_only=self.autonomy <= 1)
         return [r.to_dict() for r in reports]
 
     def _evolution_mutator(self, role: str, incumbent: str, k: int
@@ -2103,7 +1993,7 @@ class Agent:
         brief as the worker's system prompt; score deterministically from
         the reply's structure (STATUS/SUMMARY contract + substance)."""
         from . import systemprompt
-        system = systemprompt.WORKER.format(role_brief=brief, max_workers=1)
+        system = systemprompt.WORKER.format(role_brief=brief)
         result = chat_blocking(
             self.provider, self.model, self.effort,
             [{"role": "system", "content": system},
@@ -2137,11 +2027,10 @@ class Agent:
         return result.content or ""
 
     def _market_exec(self, task: str, role: str) -> dict:
-        """Market executor: the awarded contract runs as a real Team
-        worker; its report settles the auction."""
-        reports = self.team.run(
+        """Market executor: the awarded contract runs as a real serial
+        crew worker; its report settles the auction."""
+        reports = self._run_worker_serial(
             [{"task": task, "role": role}],
-            context=self.scout_context(),
             read_only=self.autonomy <= 1)
         if not reports:
             return {"status": "error", "summary": "no report returned",
@@ -2187,8 +2076,7 @@ class Agent:
         """Run the drafted role's own benchmark with its brief; score
         the reply's structure (same yardstick as evolution)."""
         from . import systemprompt
-        system = systemprompt.WORKER.format(role_brief=draft.brief,
-                                            max_workers=1)
+        system = systemprompt.WORKER.format(role_brief=draft.brief)
         result = chat_blocking(
             self.provider, self.model, self.effort,
             [{"role": "system", "content": system},
@@ -2225,13 +2113,13 @@ class Agent:
                 f"{result.verdict}")
 
     def _race_runner(self, strategy: dict, task: str, cancel) -> str:
-        """One racing universe: a real worker under its strategy."""
+        """One racing universe: a real serial crew worker under its
+        strategy."""
         if cancel.is_set():
             return "CANCELLED"
-        reports = self.team.run(
+        reports = self._run_worker_serial(
             [{"task": f"{strategy['instructions']}\n\nTASK: {task}",
               "role": strategy["role"]}],
-            context=self.scout_context(),
             read_only=self.autonomy <= 1)
         if not reports:
             return "ERROR: no report"
@@ -2273,7 +2161,7 @@ class Agent:
 
         def compile_and_run(goal: str, read_only: bool = False) -> str:
             """Compile the goal into an optimized wave plan, then execute
-            it wave by wave (each wave parallel)."""
+            it wave by wave, each worker serially."""
             goal = str(goal or "").strip()
             if not goal:
                 return "ERROR: goal must be a non-empty string"
@@ -2340,9 +2228,9 @@ class Agent:
             "COMPILE the goal through the Intent Compiler: it is drafted "
             "into typed work items, then deterministic optimizer passes "
             "(dedupe, dead-dependency pruning, topological layering, "
-            "write-lock scheduling) build parallel waves, and each wave "
-            "executes as REAL parallel workers. Best for multi-step "
-            "goals where order and parallelism matter.",
+            "write-lock scheduling) build ordered waves, and each wave "
+            "executes as REAL serial workers. Best for multi-step goals "
+            "where order matters.",
             {"type": "object", "properties": {
                 "goal": {"type": "string"}, "read_only": {"type":
                                                           "boolean"}},
@@ -2453,12 +2341,12 @@ class Agent:
             return impact.format()
 
         def race_strategies(task: str) -> str:
-            """Launch 3 parallel strategy universes on one task; the
-            first verified result wins, the rest are cancelled."""
+            """Try 3 strategy universes one at a time on one task; the
+            first verified result wins, the rest are skipped."""
             task = str(task or "").strip()
             if not task:
                 return "ERROR: task must be a non-empty string"
-            self._push_status("⚡ race · 3 universes launching")
+            self._push_status("⚡ race · 3 universes queued")
             result = self.racer.race(task, timeout=420.0)
             return self.racer.format(result)
 
@@ -2521,9 +2409,9 @@ class Agent:
             predict_impact)
         self.tools["race_strategies"] = Tool(
             "race_strategies",
-            "RACE three strategy universes in parallel on one task "
-            "(direct / careful / parallel approaches); the first "
-            "verified result WINS and the rest are cancelled. Use for "
+            "RACE three strategy universes one at a time on one task "
+            "(direct / careful / split approaches); the first "
+            "verified result WINS and the rest are skipped. Use for "
             "hard problems where you are unsure which approach works.",
             {"type": "object", "properties": {
                 "task": {"type": "string"}},
@@ -2578,13 +2466,13 @@ class Agent:
         self.tools[name] = Tool(name, skill.description or name,
                                 schema, handler)
 
-    # -- swarm (§16) ---------------------------------------------------------
+    # -- shared subagent context ------------------------------------------------
 
     def scout_context(self, max_chars: int = 4000) -> str:
-        """Shared read-only context handed to every scout (§16: scouts get
-        a fresh minimal context — the question plus a little shared state).
-        Scouts have no tools, so anything they must reason about has to be
-        in here: where we are, what the goal is, what is known so far."""
+        """Shared read-only context handed to every subagent (each gets
+        a fresh minimal context — its task plus a little shared state).
+        Subagents get little else, so anything they must reason about has
+        to be in here: where we are, what the goal is, what is known."""
         parts: list[str] = [f"Working directory: {Path.cwd()}"]
         try:
             entries = sorted(p.name + ("/" if p.is_dir() else "")

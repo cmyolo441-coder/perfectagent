@@ -121,10 +121,13 @@ MODELS: list[Model] = [
     Model("gemini-3.1-pro", "zen", "Gemini 3.1 Pro",
           context_window=1_048_576),
     Model("gpt-5.2", "zen", "GPT-5.2", context_window=400_000),
+    # supports_reasoning=True means the backend understands a reasoning
+    # switch — the client uses it to send an EXPLICIT "none" (thinking
+    # off globally), not to turn thinking on.
     Model("qwen/qwen3.8-max-free", "tokenrouter", "Qwen3.8 Max", tag="FREE",
           tag_color="green", supports_reasoning=True),
     Model("deepseek-ai/DeepSeek-V3.2", "tokenrouter", "DeepSeek V3.2",
-          supports_reasoning=True, context_window=131_072),
+          supports_reasoning=False, context_window=131_072),
     Model("moonshotai/Kimi-K2-Instruct", "tokenrouter", "Kimi K2",
           context_window=131_072),
     Model("agnes-2.5-flash", "agnes", "Agnes 2.5 Flash", tag="FAST",
@@ -146,15 +149,15 @@ class Effort:
 
 
 EFFORTS: list[Effort] = [
-    Effort("low", "LOW", "#6272a4", MAX_TOKENS, 0.2, "low",
+    Effort("low", "LOW", "#6272a4", MAX_TOKENS, 0.2, None,
            "short answers, minimal tokens"),
-    Effort("medium", "MEDIUM", "#8be9fd", MAX_TOKENS, 0.4, "medium",
+    Effort("medium", "MEDIUM", "#8be9fd", MAX_TOKENS, 0.4, None,
            "balanced length and speed"),
-    Effort("high", "HIGH", "#50fa7b", MAX_TOKENS, 0.6, "xhigh",
+    Effort("high", "HIGH", "#50fa7b", MAX_TOKENS, 0.6, None,
            "thorough, detailed answers"),
-    Effort("extrahigh", "EXTRA HIGH", "#ffb86c", MAX_TOKENS, 0.7, "xhigh",
-           "deep reasoning, long outputs"),
-    Effort("ultrahigh", "ULTRA HIGH", "#ff5555", MAX_TOKENS, 0.8, "xhigh",
+    Effort("extrahigh", "EXTRA HIGH", "#ffb86c", MAX_TOKENS, 0.7, None,
+           "deep work, long outputs"),
+    Effort("ultrahigh", "ULTRA HIGH", "#ff5555", MAX_TOKENS, 0.8, None,
            "maximum depth, exhaustive work"),
 ]
 

@@ -19,7 +19,8 @@ Design:
   * `speaker` produces one position: speaker(role, brief) -> str. In the
     agent it is bound to a model call through the Mastermind gate; in tests
     it is a stub. The council itself is deterministic orchestration.
-  * Positions run in parallel (thesis and antithesis are independent).
+  * Positions run one at a time (thesis, then antithesis) — no parallel
+    subagents.
   * The synthesis prompt is built mechanically from the two positions and
     carries NO other context — the blindness is structural.
 """
@@ -27,7 +28,6 @@ Design:
 from __future__ import annotations
 
 import re
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from .kernel import EventLog, fold
@@ -127,7 +127,7 @@ class Council:
         self.timeout = timeout
 
     def convene(self, question: str) -> Verdict:
-        """Run one full debate: thesis + antithesis in parallel, then the
+        """Run one full debate: thesis, then antithesis (serial), then the
         blind synthesis. Never raises — failures land in Verdict.error."""
         council_id = f"council-{self.log.head() + 1}"
         self.log.append("council.convened",
@@ -156,8 +156,7 @@ class Council:
                 return Position(role, ok=False,
                                 error=f"{type(e).__name__}: {e}")
 
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            positions = list(ex.map(_speak, ROLES))
+        positions = [_speak(role) for role in ROLES]
 
         for p in positions:
             self.log.append("council.position",

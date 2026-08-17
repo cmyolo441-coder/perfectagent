@@ -138,10 +138,6 @@ class State:
     # while the contract is still open
     goal_closed: dict | None = None
     autonomy: int = 3
-    swarm_reports: list[dict] = field(default_factory=list)
-    team_reports: list[dict] = field(default_factory=list)
-    # squad — 8-specialist parallel runs, newest last
-    squad_reports: list[dict] = field(default_factory=list)
     # advanced subsystems (compiler/evolution/brain/merge/theater/debate/
     # market) — one bucket, newest last; each module filters by "type"
     advanced_events: list[dict] = field(default_factory=list)
@@ -226,9 +222,24 @@ class EventLog:
         self._next_seq = 0
         self.branch = branch
         self.session = session
+        # SPEED: per-branch chain cache (extended incrementally, O(1) per
+        # append) + fold memoisation keyed by (branch, head seq) + one
+        # persistent append handle with batched fsync. Event queries used
+        # to cost O(n) every time — these caches make steady-state reads
+        # O(1) and every append a buffered write.
+        self._chains: dict[str, list[Event]] = {}
+        self._fold_cache: dict[str, tuple[str | None, object]] = {}
+        self._fh = None
+        self._writes_since_sync = 0
         self._load()
 
     # -- persistence -------------------------------------------------------
+
+    # SPEED: writes go through ONE persistent append handle; a full disk
+    # sync happens once per batch instead of after every single event.
+    # Events still flush to the OS on every write (survives a crash of
+    # this process; only a power loss can drop the last few).
+    _SYNC_EVERY = 64
 
     def _load(self) -> None:
         self._heads.setdefault(self.branch, None)
@@ -259,14 +270,23 @@ class EventLog:
             # fresh mount, etc.) — recreate it and write again. The log
             # must never take the app down over a missing directory.
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._fh = None
+            self._write_event(ev)
+        except ValueError:
+            # handle was closed/replaced underneath us — reopen once
+            self._fh = None
             self._write_event(ev)
 
     def _write_event(self, ev: Event) -> None:
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(ev.to_dict(), ensure_ascii=False) + "\n")
-            f.flush()
+        if self._fh is None:
+            self._fh = self.path.open("a", encoding="utf-8")
+        self._fh.write(json.dumps(ev.to_dict(), ensure_ascii=False) + "\n")
+        self._fh.flush()
+        self._writes_since_sync += 1
+        if self._writes_since_sync >= self._SYNC_EVERY:
+            self._writes_since_sync = 0
             try:
-                os.fsync(f.fileno())
+                os.fsync(self._fh.fileno())
             except OSError:
                 pass
 
@@ -311,16 +331,44 @@ class EventLog:
     # -- chain walking -------------------------------------------------------
 
     def _chain(self, branch: str) -> list[Event]:
-        """The branch's history (parent chain from its head), causal order."""
+        """The branch's history (parent chain from its head), causal order.
+
+        SPEED: cached per branch and extended incrementally — a steady-state
+        append costs O(1) here instead of an O(n) walk + reversal."""
+        head_id = self._heads.get(branch)
+        cached = self._chains.get(branch)
+        if cached is not None:
+            if not cached and head_id is None:
+                return cached
+            if cached and head_id == cached[-1].id:
+                return cached
+            # head moved forward (new appends) — extend from the cached tail
+            if cached and head_id is not None:
+                tail_id = cached[-1].id
+                new: list[Event] = []
+                cur = self._by_id.get(head_id)
+                seen: set[str] = set()
+                while cur is not None and cur.id != tail_id \
+                        and cur.id not in seen:
+                    seen.add(cur.id)
+                    new.append(cur)
+                    cur = (self._by_id.get(cur.parent)
+                           if cur.parent else None)
+                if cur is not None and cur.id == tail_id:
+                    new.reverse()
+                    self._chains[branch] = cached + new
+                    return self._chains[branch]
+        # first access, rewind or fork — full rebuild (then cached)
         chain: list[Event] = []
-        cur = self._heads.get(branch)
-        seen: set[str] = set()
-        while cur and cur in self._by_id and cur not in seen:
-            seen.add(cur)
-            ev = self._by_id[cur]
+        cur_id = head_id
+        seen2: set[str] = set()
+        while cur_id and cur_id in self._by_id and cur_id not in seen2:
+            seen2.add(cur_id)
+            ev = self._by_id[cur_id]
             chain.append(ev)
-            cur = ev.parent
+            cur_id = ev.parent
         chain.reverse()
+        self._chains[branch] = chain
         return chain
 
     def _event_at(self, branch: str, seq: int) -> Event | None:
@@ -479,6 +527,144 @@ ADVANCED_EVENT_TYPES = frozenset({
 })
 
 
+def _fold_apply(st: State, ev: Event) -> None:
+    """Apply ONE event to a State projection (the reduce step)."""
+    st.head_seq = ev.seq
+    d = ev.data
+    t = ev.type
+
+    if t == "user.message":
+        st.messages.append({"role": "user", "content": d.get("text", "")})
+    elif t == "assistant.message":
+        st.messages.append({"role": "assistant",
+                            "content": d.get("text", "")})
+    elif t == "tool.call":
+        st.tool_calls += 1
+        name = d.get("name", "")
+        if name == "run_command":
+            st.commands_run += 1
+        if name in _MUTATING_TOOLS and d.get("args"):
+            p = d["args"].get("path") or d["args"].get("dst")
+            if p:
+                st.files_touched.add(str(p))
+    elif t == "tool.result":
+        if d.get("status") == "error":
+            st.tool_errors += 1
+    elif t == "cost.incurred":
+        st.cost_usd += float(d.get("usd", 0.0))
+        st.tokens_in += int(d.get("tokens_in", 0))
+        st.tokens_out += int(d.get("tokens_out", 0))
+    elif t == "memory.episode":
+        st.episodes.append(d)
+    elif t == "deadend.recorded":
+        st.dead_ends.append(d)
+    elif t == "goal.set":
+        st.goal = d
+        st.goal_done = []
+        st.goal_closed = None  # a new contract reopens the world
+    elif t == "goal.clause.done":
+        st.goal_done.append(d.get("clause", ""))
+    elif t == "autonomy.changed":
+        st.autonomy = int(d.get("level", st.autonomy))
+    elif t in ADVANCED_EVENT_TYPES:
+        st.advanced_events.append({"type": t, **d})
+    elif t == "prompt.sealed":
+        st.prompt_sealed.append(d)
+    elif t == "prompt.dispatch":
+        st.prompt_dispatches.append(d)
+    elif t == "router.decision":
+        st.router_decisions.append(d)
+    elif t == "semantic.indexed":
+        st.semantic_index.append(d)
+    elif t in ("spec.prefetch", "spec.hit", "spec.miss", "spec.evict"):
+        st.spec_events.append({"type": t, **d})
+    elif t in ("daemon.mission", "daemon.checkpoint", "daemon.tick",
+               "daemon.wake", "daemon.done"):
+        st.daemon_events.append({"type": t, **d})
+    elif t in ("heal.captured", "heal.hypothesis", "heal.patch",
+               "heal.retry", "heal.lesson"):
+        st.heal_events.append({"type": t, **d})
+    elif t in ("skill.authored", "skill.validated", "skill.registered",
+               "skill.rejected"):
+        st.skill_events.append({"type": t, **d})
+    elif t in ("council.convened", "council.position", "council.verdict"):
+        st.council_events.append({"type": t, **d})
+    elif t in ("lsp.session", "lsp.symbols", "lsp.references",
+               "lsp.diagnostics"):
+        st.lsp_events.append({"type": t, **d})
+    elif t in ("dap.session", "dap.breakpoint", "dap.stopped",
+               "dap.variables"):
+        st.dap_events.append({"type": t, **d})
+    elif t in ("analysis.taint", "analysis.complexity",
+               "analysis.cycles"):
+        st.analysis_events.append({"type": t, **d})
+    elif t in ("mutation.run", "mutation.result"):
+        st.mutation_events.append({"type": t, **d})
+    elif t in ("coverage.run", "coverage.result"):
+        st.coverage_events.append({"type": t, **d})
+    elif t in ("fuzz.run", "fuzz.crash", "fuzz.shrunk"):
+        st.fuzz_events.append({"type": t, **d})
+    elif t in ("graph.entity", "graph.relation", "graph.query"):
+        st.graph_events.append({"type": t, **d})
+    elif t in ("browser.navigate", "browser.action", "browser.extract"):
+        st.browser_events.append({"type": t, **d})
+    elif t in ("openapi.compiled", "openapi.call"):
+        st.openapi_events.append({"type": t, **d})
+    elif t in ("db.query", "db.schema"):
+        st.db_events.append({"type": t, **d})
+    elif t in ("git.diff", "git.commit", "git.blame"):
+        st.git_events.append({"type": t, **d})
+    elif t in ("ensemble.run", "ensemble.verdict"):
+        st.ensemble_events.append({"type": t, **d})
+    elif t in ("hybrid.indexed", "hybrid.query"):
+        st.hybrid_events.append({"type": t, **d})
+    elif t in ("compress.run",):
+        st.compress_events.append({"type": t, **d})
+    elif t in ("eval.task", "eval.result"):
+        st.eval_events.append({"type": t, **d})
+    elif t in ("sched.job", "sched.fired"):
+        st.sched_events.append({"type": t, **d})
+    elif t in ("cache.metrics",):
+        st.cache_events.append({"type": t, **d})
+    elif t in ("cost.entry",):
+        st.cost_ledger.append(d)
+    elif t == "judge.verdict":
+        st.verdicts.append(d)
+    elif t == "snapshot.taken":
+        st.snapshots.append(d)
+    elif t == "plan.node":
+        node = dict(d)
+        st.nodes[node.get("id", "")] = node
+    elif t == "plan.node.status":
+        node = st.nodes.get(d.get("id", ""))
+        if node is not None:
+            node["status"] = d.get("status", node.get("status"))
+            if "attempts" in d:
+                node["attempts"] = d["attempts"]
+    elif t == "budget.event":
+        st.budget_events.append(d)
+    elif t == "clause.proven":
+        st.clause_proven.append(d)
+    elif t == "clause.regressed":
+        st.clause_regressed.append(d)
+    elif t == "goal.amendment":
+        st.amendments.append(d)
+    elif t == "goal.focus":
+        st.focus_shifts.append(d)
+    elif t == "goal.distance":
+        st.distance_measures.append(d)
+    elif t == "goal.closed":
+        st.goal_closed = d
+    elif t == "fact.learned":
+        st.facts.append(d)
+    elif t == "env.digest":
+        st.env_digests.append(d)
+    elif t == "calibration.sample":
+        st.calibration.append(d)
+    elif t == "loop.alert":
+        st.loop_alerts.append(d)
+
+
 def fold(log: EventLog, branch: str | None = None,
          upto_seq: int | None = None,
          from_seq: int = -1) -> State:
@@ -486,158 +672,62 @@ def fold(log: EventLog, branch: str | None = None,
 
     from_seq skips every event with seq <= from_seq — used for
     session-scoped projections (budget spend etc.) without mutating
-    or copying the log."""
+    or copying the log.
+
+    SPEED: full-log folds are cached per branch and extended
+    INCREMENTALLY — after the first fold, a steady-state call applies
+    only the events appended since the last one (typically 1-5), so
+    the dozens of fold() calls inside one turn cost near-zero instead
+    of O(n) each. Rewinds naturally miss the cache and rebuild.
+    Callers must treat the returned State as read-only."""
+    if upto_seq is None and from_seq == -1:
+        with log._lock:
+            return _fold_cached(log, branch or log.branch)
     br = branch or log.branch
     st = State(branch=br)
     for ev in log.events(br, upto_seq):
         if ev.seq <= from_seq:
             continue
-        st.head_seq = ev.seq
-        d = ev.data
-        t = ev.type
-
-        if t == "user.message":
-            st.messages.append({"role": "user", "content": d.get("text", "")})
-        elif t == "assistant.message":
-            st.messages.append({"role": "assistant",
-                                "content": d.get("text", "")})
-        elif t == "tool.call":
-            st.tool_calls += 1
-            name = d.get("name", "")
-            if name == "run_command":
-                st.commands_run += 1
-            if name in _MUTATING_TOOLS and d.get("args"):
-                p = d["args"].get("path") or d["args"].get("dst")
-                if p:
-                    st.files_touched.add(str(p))
-        elif t == "tool.result":
-            if d.get("status") == "error":
-                st.tool_errors += 1
-        elif t == "cost.incurred":
-            st.cost_usd += float(d.get("usd", 0.0))
-            st.tokens_in += int(d.get("tokens_in", 0))
-            st.tokens_out += int(d.get("tokens_out", 0))
-        elif t == "memory.episode":
-            st.episodes.append(d)
-        elif t == "deadend.recorded":
-            st.dead_ends.append(d)
-        elif t == "goal.set":
-            st.goal = d
-            st.goal_done = []
-            st.goal_closed = None  # a new contract reopens the world
-        elif t == "goal.clause.done":
-            st.goal_done.append(d.get("clause", ""))
-        elif t == "autonomy.changed":
-            st.autonomy = int(d.get("level", st.autonomy))
-        elif t == "swarm.report":
-            st.swarm_reports.append(d)
-        elif t == "team.report":
-            st.team_reports.append(d)
-        elif t == "squad.report":
-            st.squad_reports.append(d)
-        elif t in ADVANCED_EVENT_TYPES:
-            st.advanced_events.append({"type": t, **d})
-        elif t == "prompt.sealed":
-            st.prompt_sealed.append(d)
-        elif t == "prompt.dispatch":
-            st.prompt_dispatches.append(d)
-        elif t == "router.decision":
-            st.router_decisions.append(d)
-        elif t == "semantic.indexed":
-            st.semantic_index.append(d)
-        elif t in ("spec.prefetch", "spec.hit", "spec.miss", "spec.evict"):
-            st.spec_events.append({"type": t, **d})
-        elif t in ("daemon.mission", "daemon.checkpoint", "daemon.tick",
-                   "daemon.wake", "daemon.done"):
-            st.daemon_events.append({"type": t, **d})
-        elif t in ("heal.captured", "heal.hypothesis", "heal.patch",
-                   "heal.retry", "heal.lesson"):
-            st.heal_events.append({"type": t, **d})
-        elif t in ("skill.authored", "skill.validated", "skill.registered",
-                   "skill.rejected"):
-            st.skill_events.append({"type": t, **d})
-        elif t in ("council.convened", "council.position", "council.verdict"):
-            st.council_events.append({"type": t, **d})
-        elif t in ("lsp.session", "lsp.symbols", "lsp.references",
-                   "lsp.diagnostics"):
-            st.lsp_events.append({"type": t, **d})
-        elif t in ("dap.session", "dap.breakpoint", "dap.stopped",
-                   "dap.variables"):
-            st.dap_events.append({"type": t, **d})
-        elif t in ("analysis.taint", "analysis.complexity",
-                   "analysis.cycles"):
-            st.analysis_events.append({"type": t, **d})
-        elif t in ("mutation.run", "mutation.result"):
-            st.mutation_events.append({"type": t, **d})
-        elif t in ("coverage.run", "coverage.result"):
-            st.coverage_events.append({"type": t, **d})
-        elif t in ("fuzz.run", "fuzz.crash", "fuzz.shrunk"):
-            st.fuzz_events.append({"type": t, **d})
-        elif t in ("graph.entity", "graph.relation", "graph.query"):
-            st.graph_events.append({"type": t, **d})
-        elif t in ("browser.navigate", "browser.action", "browser.extract"):
-            st.browser_events.append({"type": t, **d})
-        elif t in ("openapi.compiled", "openapi.call"):
-            st.openapi_events.append({"type": t, **d})
-        elif t in ("db.query", "db.schema"):
-            st.db_events.append({"type": t, **d})
-        elif t in ("git.diff", "git.commit", "git.blame"):
-            st.git_events.append({"type": t, **d})
-        elif t in ("ensemble.run", "ensemble.verdict"):
-            st.ensemble_events.append({"type": t, **d})
-        elif t in ("hybrid.indexed", "hybrid.query"):
-            st.hybrid_events.append({"type": t, **d})
-        elif t in ("compress.run",):
-            st.compress_events.append({"type": t, **d})
-        elif t in ("eval.task", "eval.result"):
-            st.eval_events.append({"type": t, **d})
-        elif t in ("sched.job", "sched.fired"):
-            st.sched_events.append({"type": t, **d})
-        elif t in ("cache.metrics",):
-            st.cache_events.append({"type": t, **d})
-        elif t in ("cost.entry",):
-            st.cost_ledger.append(d)
-        elif t == "judge.verdict":
-            st.verdicts.append(d)
-        elif t == "snapshot.taken":
-            st.snapshots.append(d)
-        elif t == "plan.node":
-            node = dict(d)
-            st.nodes[node.get("id", "")] = node
-        elif t == "plan.node.status":
-            node = st.nodes.get(d.get("id", ""))
-            if node is not None:
-                node["status"] = d.get("status", node.get("status"))
-                if "attempts" in d:
-                    node["attempts"] = d["attempts"]
-        elif t == "budget.event":
-            st.budget_events.append(d)
-        elif t == "clause.proven":
-            st.clause_proven.append(d)
-        elif t == "clause.regressed":
-            st.clause_regressed.append(d)
-        elif t == "goal.amendment":
-            st.amendments.append(d)
-        elif t == "goal.focus":
-            st.focus_shifts.append(d)
-        elif t == "goal.distance":
-            st.distance_measures.append(d)
-        elif t == "goal.closed":
-            st.goal_closed = d
-        elif t == "fact.learned":
-            st.facts.append(d)
-        elif t == "env.digest":
-            st.env_digests.append(d)
-        elif t == "calibration.sample":
-            st.calibration.append(d)
-        elif t == "loop.alert":
-            st.loop_alerts.append(d)
+        _fold_apply(st, ev)
     return st
 
 
-def replay(log: EventLog, branch: str | None = None) -> Iterator[Event]:
-    """Yield events in causal order — the session as a film."""
-    yield from log.events(branch)
+def _fold_cached(log: EventLog, br: str) -> State:
+    """Cached, incremental full-log fold for one branch (caller holds
+    log._lock)."""
+    head_id = log._heads.get(br)
+    cached = log._fold_cache.get(br)
+    if cached is not None:
+        cached_id, st = cached
+        if cached_id == head_id:
+            return st
+        # extend: walk the new events back from the head to the cached
+        # head, then apply them in causal order onto the cached state
+        new_evs: list[Event] = []
+        cur = head_id
+        seen: set[str] = set()
+        chained = False
+        while cur and cur != cached_id and cur not in seen:
+            seen.add(cur)
+            ev = log._by_id.get(cur)
+            if ev is None:
+                break
+            new_evs.append(ev)
+            cur = ev.parent
+        else:
+            if cur == cached_id:
+                chained = True
+        if chained:
+            for ev in reversed(new_evs):
+                _fold_apply(st, ev)
+            log._fold_cache[br] = (head_id, st)
+            return st
+    # first fold on this branch, or the chain diverged (rewind) — rebuild
+    st = State(branch=br)
+    for ev in log._chain(br):
+        _fold_apply(st, ev)
+    log._fold_cache[br] = (head_id, st)
+    return st
 
 
 # ---------------------------------------------------------------------------

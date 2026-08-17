@@ -129,8 +129,8 @@ class RoleForge:
                         {"name": draft.name, "score": round(score, 3),
                          **draft.to_dict()}, actor="kernel")
         return "sealed", (f"role '{draft.name}' is LIVE — sealed at "
-                          f"audition {score:.2f}, available to team/"
-                          f"crew/squad and sealed in the vault")
+                          f"audition {score:.2f}, available to the crew "
+                          f"and sealed in the vault")
 
     # -- mechanical gates --------------------------------------------------------
 
@@ -170,7 +170,7 @@ class RoleForge:
                              "writes": draft.writes}
         systemprompt.ROLE_BRIEFS[draft.name] = draft.brief
         systemprompt.register(f"worker:{draft.name}",
-                              systemprompt.worker(draft.name, 8))
+                              systemprompt.worker(draft.name))
 
     def roster(self) -> list[str]:
         return sorted(ROLES)
@@ -213,18 +213,19 @@ if __name__ == "__main__":
         assert set(_ROLES["sql_surgeon"]["tools"]) <= set(
             _all_tool_names())
 
-        # a Team built AFTER the seal carries the new toolset
-        from .team import Team
+        # a Crew built AFTER the seal carries the new role's toolset
+        from .crew import Crew
         from .config import Effort, Model, Provider
-        team = Team(log, Provider(key="t", name="T",
+        crew = Crew(log, Provider(key="t", name="T",
                                   base_url="http://t", api_key="x",
                                   color="#fff"),
-                    Model(id="s", provider="t", label="S"),
+                    Model(id="s", provider="t", label="S",
+                          supports_tools=True),
                     Effort(key="low", label="L", color="#f",
                            max_tokens=8, temperature=0.0,
                            reasoning_effort=None, description="t"))
-        assert "sql_surgeon" in team._toolsets
-        assert "run_command" in team._toolsets["sql_surgeon"]
+        assert "sql_surgeon" in crew._toolsets
+        assert "run_command" in crew._toolsets["sql_surgeon"]
 
         # duplicate names never shadow
         dup = RoleForge(log, good_drafter, lambda d: 0.99)

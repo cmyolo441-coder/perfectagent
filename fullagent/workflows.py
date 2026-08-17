@@ -2,8 +2,8 @@
 
 A workflow is a reusable, version-controlled recipe: an ordered set of
 steps, each with a task, a role, an optional model override, and an
-optional machine-checkable `expect` predicate. Steps sharing a phase
-number run IN PARALLEL; phases run in order — real orchestration, not a
+optional machine-checkable `expect` predicate. Steps run one at a time,
+grouped into phases that execute in order — real orchestration, not a
 todo list.
 
     {"name": "ship-feature",
@@ -180,8 +180,8 @@ class WorkflowEngine:
 
     def run(self, name: str, timeout: float = 240.0) -> dict:
         """Execute a saved workflow: phases in order, steps within a
-        phase in parallel. A failed expect-predicate BLOCKS the run at
-        that step. Returns the run report dict."""
+        phase one at a time (serial). A failed expect-predicate BLOCKS
+        the run at that step. Returns the run report dict."""
         wf = self.load(name)
         if self.executor is None:
             raise WorkflowError("no executor bound — workflows cannot run")
@@ -203,8 +203,8 @@ class WorkflowEngine:
         for phase_num, steps in ordered:
             if state != "RUNNING":
                 break
-            # steps within a phase run in parallel (executor is
-            # responsible for real parallelism — the Crew does)
+            # steps within a phase run one at a time, in the order the
+            # executor is bound to (the Crew's serial queue)
             batch_reports = self._run_batch(
                 [{"task": s.task, "role": s.role, "model": s.model,
                   "_n": n} for n, s in steps], timeout)
@@ -245,8 +245,8 @@ class WorkflowEngine:
         return report
 
     def _run_batch(self, batch: list[dict], timeout: float) -> list[dict]:
-        """Run one phase's steps. Sequential fallback when the executor
-        is plain; the agent's bound executor parallelises via the Crew."""
+        """Run one phase's steps serially — one subagent at a time through
+        the bound executor."""
         reports = []
         for item in batch:
             started = time.monotonic()

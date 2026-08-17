@@ -24,7 +24,7 @@ MAX_RETRIES = 3
 _COLD_ADMISSION_RE = re.compile(
     r"cache-only admission|cold or overloaded", re.I)
 MAX_COLD_RETRIES = 4
-COLD_RETRY_WAIT = 8.0  # seconds; multiplied by the retry number
+COLD_RETRY_WAIT = 4.0  # seconds; multiplied by the retry number
 
 
 def is_cold_admission(message: str) -> bool:
@@ -35,6 +35,26 @@ class APIError(Exception):
     def __init__(self, message: str, status: int | None = None):
         super().__init__(message)
         self.status = status
+
+
+# -- fast HTTP ---------------------------------------------------------------
+# ONE pooled session for every request: the TCP+TLS handshake to the
+# provider happens once and is reused for every model call, tool turn and
+# follow-up. A turn that makes a dozen model calls saves a full handshake
+# on each — this is the single biggest latency cut.
+_SESSION: requests.Session | None = None
+
+
+def _http() -> requests.Session:
+    global _SESSION
+    if _SESSION is None:
+        s = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=8, pool_maxsize=16, max_retries=0)
+        s.mount("https://", adapter)
+        s.mount("http://", adapter)
+        _SESSION = s
+    return _SESSION
 
 
 class TurnCancelled(Exception):
@@ -85,9 +105,14 @@ def build_payload(model: Model, effort: Effort, messages: list[dict],
     if tools and model.supports_tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
-    if model.supports_reasoning and effort.reasoning_effort:
-        payload["reasoning_effort"] = _normalize_reasoning_effort(
-            model.provider, effort.reasoning_effort)
+    # THINKING IS GLOBALLY OFF — no effort level ever turns it on. Every
+    # request to a reasoning-capable backend carries the strongest
+    # suppression that backend accepts (see _THINKING_OFF_PAYLOAD); any
+    # thinking tokens a backend still produces are dropped client-side,
+    # never streamed and never stored.
+    if model.supports_reasoning:
+        payload.update(_THINKING_OFF_PAYLOAD.get(
+            model.provider, {"reasoning_effort": "none"}))
     return payload
 
 
@@ -290,20 +315,17 @@ def _clamp_max_tokens(provider_key: str, value: int) -> int:
     return min(value, cap)
 
 
-# Providers accept different reasoning-effort vocabularies. Map our internal
-# levels onto what each backend actually accepts; unknown providers pass
-# through unchanged.
-_REASONING_EFFORT_MAP: dict[str, dict[str, str]] = {
-    # sglang-backed Agnes: none | low | medium | high | max
-    "agnes": {"low": "low", "medium": "medium", "xhigh": "max"},
+# THINKING IS GLOBALLY OFF. Every reasoning-capable model gets its
+# backend's strongest thinking suppression at send time:
+#   - tokenrouter (Qwen3.8 open-text checkpoints): the backend REJECTS
+#     enable_thinking=false ("checkpoints require thinking") and
+#     reasoning_effort must be low|medium|xhigh — so we force the
+#     floor effort "low". The thinking the model still produces is
+#     stripped client-side (never streamed, never stored).
+#   - every other provider: an explicit reasoning_effort "none".
+_THINKING_OFF_PAYLOAD: dict[str, dict[str, Any]] = {
+    "tokenrouter": {"reasoning_effort": "low"},
 }
-
-
-def _normalize_reasoning_effort(provider_key: str, value: str) -> str:
-    mapping = _REASONING_EFFORT_MAP.get(provider_key)
-    if mapping is None:
-        return value
-    return mapping.get(value, value)
 
 
 def _iter_sse_events(resp: requests.Response) -> Iterator[dict]:
@@ -608,7 +630,9 @@ def _chat_stream_with_retries(url: str, headers: dict, payload: dict,
                     continue
                 raise
             if e.status in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
-                wait = 2.0 * (attempt + 1)
+                # fast first retry, then escalate — rate limits resolve
+                # quickly on free tiers; never stall the UI for seconds
+                wait = 0.5 if attempt == 0 else 2.0 * attempt
                 time.sleep(wait)
                 attempt += 1
                 continue
@@ -616,14 +640,14 @@ def _chat_stream_with_retries(url: str, headers: dict, payload: dict,
         except requests.exceptions.Timeout as e:
             last_error = e
             if attempt < MAX_RETRIES - 1:
-                time.sleep(2.0)
+                time.sleep(0.5)
                 attempt += 1
                 continue
             raise APIError(f"request timed out after {timeout}s") from e
         except requests.exceptions.ConnectionError as e:
             last_error = e
             if attempt < MAX_RETRIES - 1:
-                time.sleep(2.0)
+                time.sleep(0.5)
                 attempt += 1
                 continue
             raise APIError(f"connection failed: {e}") from e
@@ -637,8 +661,8 @@ def _chat_stream_once(url: str, headers: dict, payload: dict,
     tc_acc: dict[int, ToolCallDelta] = {}
     announced_tools: set[int] = set()
 
-    resp = requests.post(url, headers=headers, json=payload,
-                         stream=True, timeout=timeout)
+    resp = _http().post(url, headers=headers, json=payload,
+                        stream=True, timeout=timeout)
     if resp.status_code != 200:
         body = resp.text
         raise APIError(_extract_error_message(body), status=resp.status_code)
@@ -674,12 +698,8 @@ def _chat_stream_once(url: str, headers: dict, payload: dict,
                 if on_token:
                     on_token(piece)
 
-            reasoning = delta.get("reasoning_content") or delta.get("reasoning")
-            if reasoning:
-                result.reasoning += reasoning
-                if on_reasoning:
-                    on_reasoning(reasoning)
-
+            # reasoning / thinking is OFF globally — any thinking deltas a
+            # backend still leaks are dropped, never accumulated or streamed
             for tc in delta.get("tool_calls") or []:
                 idx = tc.get("index", 0)
                 acc = tc_acc.setdefault(idx, ToolCallDelta())
@@ -717,8 +737,8 @@ def _post_with_cold_retries(url: str, headers: dict, payload: dict,
     raises; non-cold errors raise immediately."""
     last: APIError | None = None
     for cold in range(MAX_COLD_RETRIES + 1):
-        resp = requests.post(url, headers=headers, json=payload,
-                             timeout=timeout)
+        resp = _http().post(url, headers=headers, json=payload,
+                            timeout=timeout)
         if resp.status_code == 200:
             return resp
         err = APIError(_extract_error_message(resp.text),
@@ -782,7 +802,7 @@ def chat_blocking(provider: Provider, model: Model, effort: Effort,
         if choices:
             msg = choices[0].get("message") or {}
             result.content = msg.get("content") or ""
-            result.reasoning = msg.get("reasoning_content") or ""
+            # reasoning is OFF globally — dropped, never stored
             result.finish_reason = choices[0].get("finish_reason")
             for tc in msg.get("tool_calls") or []:
                 fn = tc.get("function") or {}
