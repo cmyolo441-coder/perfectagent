@@ -163,6 +163,10 @@ def main() -> int:
     _force_utf8()
 
     argv = sys.argv[1:]
+    if argv and argv[0] in ("--version", "-v"):
+        from . import __version__
+        print(f"fullagent v{__version__}")
+        return 0
     if argv:
         return _headless(argv)
 

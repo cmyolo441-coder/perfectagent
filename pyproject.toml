@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fullagent"
+dynamic = ["version"]
+description = "FullAgent — an advanced terminal AI agent (event-sourced, self-healing)"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "prompt_toolkit>=3.0",
+    "rich>=13.0",
+    "requests>=2.28",
+]
+
+[project.scripts]
+fullagent = "fullagent.__main__:main"
+
+[tool.setuptools]
+packages = ["fullagent"]
+
+[tool.setuptools.dynamic]
+version = {attr = "fullagent.__version__"}
+
+[tool.setuptools.package-data]
+fullagent = ["*.txt", "*.py"]

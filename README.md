@@ -21,21 +21,19 @@ Tokens stream live above the box, tool calls appear as `⚙ name args` with
 
 ## Install (binary — curl one-liner)
 
-Linux x86_64 single-file binary, no Python needed:
+Single-file binaries — no Python needed:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/cmyolo441-coder/perfectagent/main/install.sh | bash
-```
+| Platform | Install |
+|---|---|
+| Linux x64 | `curl -fsSL https://raw.githubusercontent.com/cmyolo441-coder/perfectagent/main/install.sh \| bash` |
+| macOS (Apple Silicon) | download `fullagent-darwin-arm64` from the [latest release](https://github.com/cmyolo441-coder/perfectagent/releases/latest), `chmod +x`, move to /usr/local/bin |
+| Windows x64 | download `fullagent-windows-x64.exe`, rename to `fullagent.exe`, put on PATH |
+| Termux (Android) | `curl -fsSL https://raw.githubusercontent.com/cmyolo441-coder/perfectagent/main/install-termux.sh \| bash` |
+| Any OS with Python 3.9+ | `pip install git+https://github.com/cmyolo441-coder/perfectagent.git` |
 
-Or download the binary directly from the [v2.4 release](https://github.com/cmyolo441-coder/perfectagent/releases/tag/v2.4):
-
-```bash
-curl -fsSL -o fullagent https://github.com/cmyolo441-coder/perfectagent/releases/download/v2.4/fullagent-linux-x64
-chmod +x fullagent && sudo mv fullagent /usr/local/bin/
-```
-
-Then just run `fullagent`. Set `INSTALL_DIR` to install elsewhere
-(e.g. `INSTALL_DIR=$HOME/.local/bin curl -fsSL … | bash`).
+`install.sh` grabs the latest release binary automatically and falls back to
+a pip install from source when no binary is published yet. Set `INSTALL_DIR`
+to install elsewhere (e.g. `INSTALL_DIR=$HOME/.local/bin curl -fsSL … | bash`).
 
 ## Run
 
