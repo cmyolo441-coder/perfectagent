@@ -692,6 +692,12 @@ def fold(log: EventLog, branch: str | None = None,
     return st
 
 
+def replay(log: EventLog, branch: str | None = None) -> Iterator[Event]:
+    """Yield the branch's events in causal order — the timeline as a film."""
+    for ev in log.events(branch):
+        yield ev
+
+
 def _fold_cached(log: EventLog, br: str) -> State:
     """Cached, incremental full-log fold for one branch (caller holds
     log._lock)."""
