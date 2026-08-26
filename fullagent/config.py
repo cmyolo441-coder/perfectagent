@@ -88,50 +88,35 @@ PROVIDERS: dict[str, Provider] = {
         key="zen",
         name="OpenCode Zen",
         base_url="https://opencode.ai/zen/v1",
-        api_key=os.environ.get(
-            "OPENCODE_API_KEY",
-            "sk-h11yU0O2sQxGL9CC0Y5bHQxtdWQSqXAi1mRUG7TSLpA7EvFAzYBpyAJ7NQ6xhDvm",
-        ),
+        api_key=os.environ.get("OPENCODE_API_KEY", ""),
         color="#8be9fd",
     ),
     "opencode": Provider(
         key="opencode",
         name="OpenCode",
         base_url="https://opencode.ai/zen/v1",
-        api_key=os.environ.get(
-            "OPENCODE_API_KEY",
-            "sk-h11yU0O2sQxGL9CC0Y5bHQxtdWQSqXAi1mRUG7TSLpA7EvFAzYBpyAJ7NQ6xhDvm",
-        ),
+        api_key=os.environ.get("OPENCODE_API_KEY", ""),
         color="#bd93f9",
     ),
     "tokenrouter": Provider(
         key="tokenrouter",
         name="TokenRouter",
         base_url="https://api.tokenrouter.com/v1",
-        api_key=os.environ.get(
-            "TOKENROUTER_API_KEY",
-            "sk-cTiHfKWRCDK6EO64AuloBS09hQGu06careTB2oQ9OETBe2wK",
-        ),
+        api_key=os.environ.get("TOKENROUTER_API_KEY", ""),
         color="#ffb86c",
     ),
     "agnes": Provider(
         key="agnes",
         name="Agnes",
         base_url="https://apihub.agnes-ai.com/v1",
-        api_key=os.environ.get(
-            "AGNES_API_KEY",
-            "sk-fKLLAlhfkYdwCMrznXi1rKlh3ZQXgNtucHrpPatC7MQCHYVi",
-        ),
+        api_key=os.environ.get("AGNES_API_KEY", ""),
         color="#50fa7b",
     ),
     "zenmux": Provider(
         key="zenmux",
         name="ZenMux",
         base_url="https://zenmux.ai/api/v1",
-        api_key=os.environ.get(
-            "ZENMUX_API_KEY",
-            "sk-ai-v1-9424a61af5fea4355a34de00530e189d1972da4d4f8324815be47b8d5a6280eb",
-        ),
+        api_key=os.environ.get("ZENMUX_API_KEY", ""),
         color="#f1fa8c",
     ),
 }
