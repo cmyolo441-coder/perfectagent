@@ -368,19 +368,23 @@ class SlashCompleter(Completer):
 
 
 class _LiveWrite:
-    """Incrementally pulls the growing `content` string out of a streaming
-    write_file tool-call's JSON arguments, so the file can be shown being
-    written line-by-line WHILE the model generates it (a true live write,
+    """Incrementally pulls a growing string field out of a streaming
+    tool-call's JSON arguments, so a file change can be shown happening
+    line-by-line WHILE the model generates it (a true live write/edit,
     not a post-hoc replay).
+
+    `key` selects which JSON string field to stream: "content" for
+    write_file, "new_string" for edit_file.
 
     Robust by design: if the JSON is shaped unexpectedly, `feed` simply
     returns no lines and the caller falls back to the normal cascade.
     Nothing here can break the turn."""
 
-    _CONTENT_KEY = re.compile(r'"content"\s*:\s*"')
     _PATH_KEY = re.compile(r'"path"\s*:\s*"')
 
-    def __init__(self):
+    def __init__(self, key: str = "content"):
+        self._CONTENT_KEY = re.compile(
+            r'"' + re.escape(key) + r'"\s*:\s*"')
         self.buf = ""            # accumulated argument JSON so far
         self.content_start = -1  # index into buf of first content char
         self.raw_pos = 0         # content raw chars already consumed
@@ -389,13 +393,19 @@ class _LiveWrite:
         self.done = False        # saw the closing quote of the content
 
     def path(self) -> str | None:
-        m = self._PATH_KEY.search(self.buf)
+        return self._field(self.buf, "path")
+
+    @classmethod
+    def _field(cls, buf: str, key: str) -> str | None:
+        """Return the value of a JSON string field if it is COMPLETE
+        (closing quote seen), else None. Used for path / old_string."""
+        m = re.search(r'"' + re.escape(key) + r'"\s*:\s*"', buf)
         if not m:
             return None
-        val, _, done = self._unescape(self.buf[m.end():])
+        val, _, done = cls._unescape(buf[m.end():])
         if not done:
-            return None  # path value still streaming — wait for closing quote
-        return val or None
+            return None  # value still streaming — wait for closing quote
+        return val
 
     def feed(self, chunk: str) -> list:
         """Feed a new argument chunk; returns the complete content lines that
@@ -2776,56 +2786,125 @@ class UI:
             self.console.print(Text(" │ " + line, style=style),
                                soft_wrap=True)
 
-        # live write_file streaming — the file is shown being written WHILE
-        # the model generates its content (true live write, not a replay).
-        # on_tool_args feeds the growing JSON; the tracker extracts the
-        # `content` lines; on_tool_update closes the block.
-        live_w = {"tracker": None, "header": False, "count": 0,
-                  "held": [], "path": ""}
+        # live file-change streaming — write_file / edit_file / apply_patch
+        # are shown happening WHILE the model generates them (true live, not
+        # a replay). on_tool_args feeds the growing JSON; a tracker pulls the
+        # relevant string field; on_tool_update closes the block.
+        live_f = {"kind": None, "tracker": None, "header": False,
+                  "count": 0, "held": [], "path": "", "old_emitted": False}
 
-        def _lw_emit(ln: str):
-            live_w["count"] += 1
+        def _lf_write_line(ln: str):
+            live_f["count"] += 1
             t = Text()
             t.append(" │ ", style=C["dim"])
-            t.append(f"{live_w['count']:>4} ", style=C["dim"])
+            t.append(f"{live_f['count']:>4} ", style=C["dim"])
             t.append("+  ", style=C["green"])
             t.append(ln, style=C["fg"])
             self.console.print(t, soft_wrap=True)
 
+        def _lf_edit_line(ln: str, plus: bool):
+            live_f["count"] += 1
+            t = Text()
+            t.append(" │ ", style=C["dim"])
+            if plus:
+                t.append("+  ", style=C["green"])
+                t.append(ln, style=C["fg"])
+            else:
+                t.append("-  ", style=C["red"])
+                t.append(ln, style=C["red"])
+            self.console.print(t, soft_wrap=True)
+
+        def _lf_patch_line(ln: str):
+            live_f["count"] += 1
+            t = Text()
+            t.append(" │ ", style=C["dim"])
+            if ln.startswith("@@"):
+                col = C["cyan"]
+            elif ln.startswith(("+++ ", "--- ")):
+                col = f"bold {C['dim']}"
+            elif ln.startswith("+"):
+                col = C["green"]
+            elif ln.startswith("-"):
+                col = C["red"]
+            else:
+                col = C["fg"]
+            t.append(ln, style=col)
+            self.console.print(t, soft_wrap=True)
+
+        def _lf_emit(ln: str):
+            k = live_f["kind"]
+            if k == "write":
+                _lf_write_line(ln)
+            elif k == "edit":
+                _lf_edit_line(ln, plus=True)
+            else:
+                _lf_patch_line(ln)
+
         def on_tool_args(name: str, chunk: str):
-            if name != "write_file":
+            if name not in ("write_file", "edit_file", "apply_patch"):
                 return
             if not self.cfg.extra.get("live_stream_edits", True):
                 return  # animations disabled — fall back to instant render
-            if live_w["tracker"] is None:
-                live_w["tracker"] = _LiveWrite()
-            tr = live_w["tracker"]
+            kind = {"write_file": "write", "edit_file": "edit",
+                    "apply_patch": "patch"}[name]
+            if live_f["tracker"] is None:
+                key = {"write": "content", "edit": "new_string",
+                       "patch": "patch"}[kind]
+                live_f["tracker"] = _LiveWrite(key)
+                live_f["kind"] = kind
+            tr = live_f["tracker"]
             try:
                 new_lines = tr.feed(chunk)
             except Exception:  # noqa: BLE001 — never break the turn
                 return
-            if not live_w["header"]:
-                p = tr.path()
+            # header once the path is known (patch has no single path)
+            if not live_f["header"]:
+                if kind == "patch":
+                    p = True  # no path arg — header can go immediately
+                else:
+                    p = tr.path()
                 if p:
-                    live_w["path"] = p
+                    if kind != "patch":
+                        live_f["path"] = p
+                    verb = {"write": "Wrote", "edit": "Edited",
+                            "patch": "Applied patch"}[kind]
+                    label = (verb if kind == "patch"
+                             else f"{verb} {self._rel_path(p)}")
                     t = Text()
                     t.append(" ⏺ ", style=f"bold {C['accent']}")
-                    t.append(f"Wrote {self._rel_path(p)}",
-                             style=f"bold {C['fg']}")
+                    t.append(label, style=f"bold {C['fg']}")
                     self.console.print(t, soft_wrap=True)
-                    live_w["header"] = True
-                    for held in live_w["held"]:
-                        _lw_emit(held)
-                    live_w["held"] = []
-            if live_w["header"]:
+                    live_f["header"] = True
+            # edit: show the removed (old) lines once old_string is complete,
+            # before any added lines stream
+            if kind == "edit" and live_f["header"] \
+                    and not live_f["old_emitted"]:
+                old = tr._field(tr.buf, "old_string")
+                if old is not None:
+                    for ol in old.splitlines():
+                        _lf_edit_line(ol, plus=False)
+                    live_f["old_emitted"] = True
+                    for held in live_f["held"]:
+                        _lf_emit(held)
+                    live_f["held"] = []
+            # stream the new lines once header (and old lines) are done
+            ready = live_f["header"] and \
+                (kind != "edit" or live_f["old_emitted"])
+            if ready:
                 for ln in new_lines:
-                    _lw_emit(ln)
+                    _lf_emit(ln)
                 if new_lines:
-                    self._set_status(f"writing "
-                                     f"{self._rel_path(live_w['path'])} · "
-                                     f"{live_w['count']} lines…")
+                    verb = {"write": "writing", "edit": "editing",
+                            "patch": "patching"}[kind]
+                    if kind != "patch":
+                        self._set_status(f"{verb} "
+                                         f"{self._rel_path(live_f['path'])} · "
+                                         f"{live_f['count']} lines…")
+                    else:
+                        self._set_status(f"{verb} · "
+                                         f"{live_f['count']} lines…")
             else:
-                live_w["held"].extend(new_lines)
+                live_f["held"].extend(new_lines)
 
         def on_tool_call(ev: ToolEvent):
             rem = stream_tail["t"].strip("\n")
@@ -2836,18 +2915,21 @@ class UI:
             shell_live["active"] = ev.name in ("run_command", "live_shell")
             shell_live["streamed"] = False
             shell_live["lines"] = 0
-            if ev.name != "write_file":
-                # a non-write tool starting clears any stale live-write state
-                live_w["tracker"] = None
-                live_w["header"] = False
-                live_w["count"] = 0
-                live_w["held"] = []
+            if ev.name not in ("write_file", "edit_file", "apply_patch"):
+                # a non file-change tool starting clears stale live state
+                live_f["kind"] = None
+                live_f["tracker"] = None
+                live_f["header"] = False
+                live_f["count"] = 0
+                live_f["held"] = []
+                live_f["old_emitted"] = False
             if ev.name in ("run_command", "live_shell", "apply_patch",
                            "write_file", "edit_file", "read_file"):
                 # live-action block header instead of the generic gear line.
-                # For write_file, skip the header if it was already printed
-                # during live streaming.
-                if ev.name == "write_file" and live_w["header"]:
+                # For file-change tools, skip the header if it was already
+                # printed during live streaming.
+                if ev.name in ("write_file", "edit_file", "apply_patch") \
+                        and live_f["header"]:
                     pass
                 else:
                     self.console.print(self._live_block(ev))
@@ -2859,16 +2941,17 @@ class UI:
             if ev.name == "wait_for_agents" and ev.status == "done":
                 # subagent reports deserve a real panel, not one line
                 self.console.print(self._subagent_panel(ev))
-            elif ev.name == "write_file" and ev.status in ("done", "error") \
-                    and live_w["count"] > 0:
-                # content already streamed live — flush the last partial
-                # line and close the block; no replay cascade
-                tr = live_w["tracker"]
+            elif ev.name in ("write_file", "edit_file", "apply_patch") \
+                    and ev.status in ("done", "error") \
+                    and live_f["count"] > 0:
+                # change already streamed live — flush the last partial line
+                # and close the block; no replay cascade
+                tr = live_f["tracker"]
                 if tr is not None:
                     last = tr.flush()
                     if last is not None:
-                        _lw_emit(last)
-                self.console.print(self._write_footer(ev, live_w["count"]))
+                        _lf_emit(last)
+                self.console.print(self._write_footer(ev, live_f["count"]))
             elif ev.name in ("write_file", "edit_file", "apply_patch") \
                     and ev.status in ("done", "error"):
                 # live-write animation — the file changes cascade down the
@@ -2886,10 +2969,12 @@ class UI:
             else:
                 self.console.print(self._tool_result_line(ev))
             shell_live["active"] = False
-            live_w["tracker"] = None
-            live_w["header"] = False
-            live_w["count"] = 0
-            live_w["held"] = []
+            live_f["kind"] = None
+            live_f["tracker"] = None
+            live_f["header"] = False
+            live_f["count"] = 0
+            live_f["held"] = []
+            live_f["old_emitted"] = False
             self._set_status("thinking…")
 
         def on_status(s: str):
