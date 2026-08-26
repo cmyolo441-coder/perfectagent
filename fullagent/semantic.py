@@ -128,8 +128,14 @@ class SemanticMemory:
 
     def _ensure_fresh(self) -> None:
         """Reindex if the log has grown since the last index, so recall
-        always sees the current corpus (the index is a pure projection)."""
-        if not self._items or self.log.head() != self._indexed_head:
+        always sees the current corpus (the index is a pure projection).
+
+        The emptiness of `_items` must NOT trigger a reindex — an empty
+        corpus IS a valid indexed state, and re-checking `not self._items`
+        here made every read on a fresh session append a new
+        semantic.indexed event, which advanced the head and guaranteed
+        yet another reindex next turn (unbounded log growth from reads)."""
+        if self.log.head() != self._indexed_head:
             self.reindex()
 
     def recall(self, query: str, k: int = 3,

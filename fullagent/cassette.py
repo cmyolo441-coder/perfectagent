@@ -19,6 +19,7 @@ import json
 import threading
 from pathlib import Path
 from typing import Any
+import copy
 
 
 def _canonical(obj: Any) -> str:
@@ -27,10 +28,16 @@ def _canonical(obj: Any) -> str:
 
 
 def request_key(model: str, messages: list[dict],
-                tools: list[dict] | None) -> str:
+                tools: list[dict] | None,
+                effort_key: str | None = None) -> str:
     """The cassette key for one request (§8.1: blake3(request) — here
-    sha256, same role)."""
-    payload = {"model": model, "messages": messages, "tools": tools or []}
+    sha256, same role).
+
+    `effort_key` participates in the hash: sampling params (max_tokens,
+    temperature) change with effort but NOT with messages, so two requests
+    that differ only in effort must not collide on one recorded response."""
+    payload = {"model": model, "messages": messages, "tools": tools or [],
+               "effort": effort_key or ""}
     return hashlib.sha256(_canonical(payload).encode()).hexdigest()
 
 
@@ -73,30 +80,37 @@ class Cassette:
     # -- record ---------------------------------------------------------------
 
     def record(self, model: str, messages: list[dict],
-               tools: list[dict] | None, response: dict) -> None:
+               tools: list[dict] | None, response: dict,
+               effort_key: str | None = None) -> None:
         """Store a real response (record mode only)."""
         if self.mode != "record":
             return
-        key = request_key(model, messages, tools)
+        key = request_key(model, messages, tools, effort_key)
         with self._lock:
-            self._store[key] = response
-            self._persist(key, response)
+            # deep-copy IN: a caller mutating the response afterwards must
+            # not rewrite what the cassette (and the JSONL) recorded
+            stored = copy.deepcopy(response)
+            self._store[key] = stored
+            self._persist(key, stored)
 
     # -- replay ---------------------------------------------------------------
 
     def replay(self, model: str, messages: list[dict],
-               tools: list[dict] | None) -> dict | None:
+               tools: list[dict] | None,
+               effort_key: str | None = None) -> dict | None:
         """Return the stored response for a request (replay mode only).
         A miss returns None and counts as a miss — the caller must treat it
         as a hard error, never fall back to a live call, or the replay is
         no longer deterministic."""
         if self.mode != "replay":
             return None
-        key = request_key(model, messages, tools)
+        key = request_key(model, messages, tools, effort_key)
         with self._lock:
             if key in self._store:
                 self.hits += 1
-                return self._store[key]
+                # deep-copy OUT: annotating a replayed response must not
+                # corrupt every future replay of the same key
+                return copy.deepcopy(self._store[key])
             self.misses += 1
             return None
 

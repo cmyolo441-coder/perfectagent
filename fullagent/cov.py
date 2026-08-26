@@ -37,7 +37,8 @@ _STATEMENTS = (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Return,
                ast.ImportFrom, ast.If, ast.For, ast.While, ast.Try,
                ast.With, ast.Expr, ast.Pass, ast.Break, ast.Continue,
                ast.Global, ast.Nonlocal, ast.FunctionDef,
-               ast.AsyncFunctionDef, ast.ClassDef, ast.Match)
+               ast.AsyncFunctionDef, ast.ClassDef)
+_STATEMENTS += (ast.Match,) if hasattr(ast, "Match") else ()  # py3.10+
 
 
 def executable_lines(source: str) -> set[int]:

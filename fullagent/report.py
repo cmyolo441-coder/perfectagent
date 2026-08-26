@@ -14,6 +14,7 @@ zero model calls):
 from __future__ import annotations
 
 import html
+import re
 import time
 from datetime import datetime
 
@@ -180,8 +181,10 @@ def export_html(log: EventLog, title: str = "FullAgent session report"
             body.append(f"<h1>{html.escape(line[2:])}</h1>")
         elif line.startswith("## "):
             body.append(f"<h2>{html.escape(line[3:])}</h2>")
-        elif line.startswith("| "):
-            cells = [c.strip() for c in line.strip("|").split("|")]
+        elif line.startswith("|"):
+            # split on unescaped pipes only; markdown-escaped "\|" is data
+            parts = re.split(r"(?<!\\)\|", line)
+            cells = [c.strip().replace("\\|", "|") for c in parts[1:-1]]
             if all(set(c) <= set("-: ") for c in cells):
                 continue  # separator row
             tag = "th" if not in_table else "td"

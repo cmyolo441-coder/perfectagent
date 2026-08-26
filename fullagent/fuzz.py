@@ -84,6 +84,8 @@ class Generator:
             return self.rng.random()
         if choice < 0.85:
             return self.lst()
+        if choice < 0.92:
+            return self.blob()
         return self.dct()
 
     def args_for(self, nargs: int) -> tuple:
@@ -126,6 +128,10 @@ def _simpler(variant: object, gen: Generator) -> list:
                 out.append(d)
     elif isinstance(variant, float):
         out.append(0.0)
+    elif isinstance(variant, bytes):
+        if variant:
+            out.append(b"")
+            out.append(variant[:len(variant) // 2])
     return out
 
 

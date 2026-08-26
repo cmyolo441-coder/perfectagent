@@ -246,7 +246,7 @@ class Tower:
                            for e in tower.log.events() if e.seq > since]
                     self._json({"events": evs[-200:]})
                 elif self.path.startswith("/api/timeline"):
-                    self._json({"frames": tower.log.head() + 1 and
+                    self._json({"frames":
                                 Theater(tower.log).frames()[-120:]})
                 elif self.path.startswith("/api/frame"):
                     try:
@@ -277,6 +277,13 @@ class Tower:
                 except ValueError:
                     self._json({"error": "bad json"}, 400)
                     return
+                if not isinstance(payload, dict):
+                    # command() does payload.get(...) — an array/string
+                    # body would AttributeError inside the handler thread
+                    # and close the connection with NO response at all
+                    self._json({"error": "payload must be a JSON object"},
+                               400)
+                    return
                 self._json(tower.command(payload))
 
         return Handler
@@ -303,6 +310,10 @@ class Tower:
     def stop(self) -> None:
         if self.server is not None:
             self.server.shutdown()
+            # shutdown() only stops the serve loop — without server_close()
+            # the listening socket leaks until GC and an immediate restart
+            # on the same port can fail to bind
+            self.server.server_close()
             self.server = None
             self.thread = None
 

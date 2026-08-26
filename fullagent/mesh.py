@@ -159,9 +159,19 @@ class MeshNode:
         with socket.create_connection((peer.host, peer.port),
                                       timeout=timeout) as sock:
             sock.sendall(json.dumps(message).encode("utf-8") + b"\n")
-            data = sock.recv(_RECV_LIMIT)
+            # newline-framed protocol: one recv() can return a partial
+            # frame whenever the reply spans TCP segments (large task
+            # results routinely do) — read until the newline
+            buf = bytearray()
+            while len(buf) < _RECV_LIMIT:
+                chunk = sock.recv(_RECV_LIMIT - len(buf))
+                if not chunk:
+                    break  # peer closed — parse what we have
+                buf += chunk
+                if b"\n" in buf:
+                    break
         try:
-            return json.loads(data.decode("utf-8"))
+            return json.loads(bytes(buf).decode("utf-8").strip())
         except (ValueError, UnicodeDecodeError):
             return {"ok": False, "error": "peer sent garbage"}
 

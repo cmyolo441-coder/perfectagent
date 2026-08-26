@@ -143,12 +143,20 @@ class WorkflowEngine:
     # -- persistence -----------------------------------------------------------
 
     def _path(self, name: str) -> Path:
+        if not _NAME_RE.match(str(name or "")):
+            # the regex guards save(); load/delete/run receive raw user
+            # text — without it, "../../etc/foo" reads or UNLINKS any
+            # *.json outside this directory
+            raise WorkflowError(f"invalid workflow name: {name!r}")
         return self.dir / f"{name}.json"
 
     def save(self, wf: Workflow) -> Path:
         self.dir.mkdir(parents=True, exist_ok=True)
         path = self._path(wf.name)
-        path.write_text(json.dumps(wf.to_dict(), indent=2))
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(wf.to_dict(), indent=2), encoding="utf-8")
+        import os
+        os.replace(tmp, path)
         self.log.append("workflow.saved",
                         {"name": wf.name, "steps": len(wf.steps)},
                         actor="sovereign")
@@ -204,11 +212,12 @@ class WorkflowEngine:
             if state != "RUNNING":
                 break
             # steps within a phase run one at a time, in the order the
-            # executor is bound to (the Crew's serial queue)
-            batch_reports = self._run_batch(
-                [{"task": s.task, "role": s.role, "model": s.model,
-                  "_n": n} for n, s in steps], timeout)
-            for (n, step), rep in zip(steps, batch_reports):
+            # executor is bound to (the Crew's serial queue); a blocked
+            # or failing step stops the remaining steps right there
+            for n, step in steps:
+                rep = self._run_step(
+                    {"task": step.task, "role": step.role,
+                     "model": step.model, "_n": n}, timeout)
                 r = StepResult(step=n, task=step.task, role=step.role,
                                status=rep.get("status", "error"),
                                summary=str(rep.get("summary", "")),
@@ -244,12 +253,15 @@ class WorkflowEngine:
                         actor="kernel")
         return report
 
-    def _run_batch(self, batch: list[dict], timeout: float) -> list[dict]:
-        """Run one phase's steps serially — one subagent at a time through
-        the bound executor."""
-        reports = []
-        for item in batch:
-            started = time.monotonic()
+    def _run_step(self, item: dict, timeout: float) -> dict:
+        """Run ONE step through the bound executor — a blocked step never
+        lets its phase's later steps execute; a hung executor is cut off
+        at the step's timeout budget instead of stalling the workflow."""
+        import threading
+        started = time.monotonic()
+        out: dict = {}
+
+        def runner():
             try:
                 rep = self.executor(item) or {}
                 if not isinstance(rep, dict):
@@ -257,12 +269,22 @@ class WorkflowEngine:
             except Exception as e:  # noqa: BLE001 — a step never kills the engine
                 rep = {"status": "error",
                        "summary": f"{type(e).__name__}: {e}"}
-            rep.setdefault("elapsed_ms",
-                           int((time.monotonic() - started) * 1000))
-            rep.setdefault("status", "done")
-            rep.setdefault("summary", "")
-            reports.append(rep)
-        return reports
+            out.update(rep)
+
+        th = threading.Thread(target=runner, daemon=True,
+                              name="workflow:step")
+        th.start()
+        th.join(max(0.0, float(timeout)))
+        if not out and th.is_alive():
+            rep = {"status": "error",
+                   "summary": f"step timed out after {timeout:g}s"}
+        else:
+            rep = out or {"status": "error", "summary": "empty report"}
+        rep.setdefault("elapsed_ms",
+                       int((time.monotonic() - started) * 1000))
+        rep.setdefault("status", "done")
+        rep.setdefault("summary", "")
+        return rep
 
     # -- rendering -----------------------------------------------------------------
 

@@ -116,17 +116,24 @@ class TaintAnalyzer:
                 if isinstance(sub, ast.Call):
                     name = _call_name(sub)
                     if name in self.sources or any(
-                            name.endswith("." + s) or s.endswith(name)
-                            for s in self.sources if "." in s or name == s):
-                        if name in self.sources:
-                            return True, name, getattr(sub, "lineno", 0)
+                            name.endswith("." + s) for s in self.sources) \
+                            or any(s.endswith(name) for s in self.sources
+                                   if "." in s):
+                        return True, name, getattr(sub, "lineno", 0)
             return False, "", 0
 
         def tainted_names(node: ast.expr) -> list[str]:
             return [n.id for n in ast.walk(node)
                     if isinstance(n, ast.Name) and n.id in tainted]
 
-        for node in ast.walk(tree):
+        # walk in SOURCE order, not BFS order: ast.walk visits nodes
+        # level-by-level, so a later re-assignment would be processed
+        # before an earlier sink call and report flows that never happen
+        stmts = sorted((n for n in ast.walk(tree)
+                        if isinstance(n, (ast.Assign, ast.Call))),
+                       key=lambda n: (getattr(n, "lineno", 0),
+                                      getattr(n, "col_offset", 0)))
+        for node in stmts:
             if isinstance(node, ast.Assign):
                 ok, sname, sline = is_source_call(node.value)
                 if ok:
@@ -166,8 +173,22 @@ class TaintAnalyzer:
 # ---------------------------------------------------------------------------
 
 _BRANCHES = (ast.If, ast.For, ast.While, ast.ExceptHandler, ast.With,
-             ast.BoolOp, ast.IfExp, ast.comprehension, ast.Assert,
-             ast.Match)
+             ast.BoolOp, ast.IfExp, ast.comprehension, ast.Assert)
+_BRANCHES += (ast.Match,) if hasattr(ast, "Match") else ()  # py3.10+
+
+
+def _own_nodes(fn: ast.AST):
+    """Walk a function's body WITHOUT descending into nested defs —
+    an inner function's branches belong to the inner function's score,
+    not to every enclosing one."""
+    from collections import deque
+    todo = deque(ast.iter_child_nodes(fn))
+    while todo:
+        node = todo.popleft()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        yield node
+        todo.extend(ast.iter_child_nodes(node))
 
 
 def cyclomatic(source: str) -> list[Complexity]:
@@ -179,7 +200,7 @@ def cyclomatic(source: str) -> list[Complexity]:
     out: list[Complexity] = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            branches = sum(1 for n in ast.walk(node)
+            branches = sum(1 for n in _own_nodes(node)
                            if isinstance(n, _BRANCHES))
             end = getattr(node, "end_lineno", node.lineno)
             nargs = len(node.args.args) + len(node.args.kwonlyargs)

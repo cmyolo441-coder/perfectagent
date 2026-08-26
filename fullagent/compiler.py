@@ -144,11 +144,16 @@ class IntentCompiler:
             role = str(entry.get("role", "")).strip().lower()
             if role not in ROLES:
                 role = "coder"          # generic default, cheapest fix
-            paths = [str(p) for p in (entry.get("paths") or [])
-                     if str(p).strip()]
+            raw_paths = entry.get("paths")
+            if not isinstance(raw_paths, (list, tuple)):
+                raw_paths = []          # scalar/garbage — drop, never crash
+            paths = [str(p) for p in raw_paths if str(p).strip()]
+            raw_deps = entry.get("depends_on")
+            if not isinstance(raw_deps, (list, tuple)):
+                raw_deps = []
             items.append({"task": task, "role": role, "paths": paths,
                           "_draft_idx": draft_idx,
-                          "_raw_deps": list(entry.get("depends_on") or [])})
+                          "_raw_deps": list(raw_deps)})
         return items, dropped
 
     def _dedupe(self, items: list[dict], dropped: list[dict]) -> list[dict]:
@@ -257,21 +262,47 @@ class IntentCompiler:
         write-path sets cannot coexist — push the later one to the next
         wave (creating waves as needed)."""
         out: list[list[dict]] = [[] for _ in waves]
+        locked: list[set[str]] = [set() for _ in waves]
+        dropped: list[dict] = []
         for wi, wave in enumerate(waves):
-            locked: set[str] = set()
             for item in wave:
                 paths = set(item.get("paths") or [])
                 writer = bool(paths) and item["role"] in (
                     "coder", "architect", "refactorer", "documenter",
                     "devops", "integrator")
-                if writer and paths & locked and wi + 1 < _MAX_WAVES + 4:
-                    if wi + 1 >= len(out):
+                cur = wi
+                # walk forward until we land on a wave whose locked-path
+                # set does not overlap with this writer's paths. Cap by
+                # _MAX_WAVES + 4 to bound the work; if even the last wave
+                # is contended, the item MUST be dropped — silently
+                # merging two writers into the same wave would let them
+                # clobber each other (the previous code did exactly that
+                # once the cap was hit, violating I7).
+                while writer and paths & locked[cur] \
+                        and cur + 1 < _MAX_WAVES + 4:
+                    cur += 1
+                    if cur >= len(out):
                         out.append([])
-                    out[wi + 1].append(item)
+                        locked.append(set())
+                if writer and paths & locked[cur]:
+                    # no wave could host this writer without a path
+                    # collision — the only safe option is to drop the
+                    # item and seal a `lockpass_overflow` reason so the
+                    # plan stays I7-consistent at the cost of one task
+                    dropped.append({**item,
+                                    "dropped": "lockpass_overflow",
+                                    "reason": f"could not place writer "
+                                              f"for paths {sorted(paths)} "
+                                              f"within wave budget"})
                     continue
                 if writer:
-                    locked |= paths
-                out[wi].append(item)
+                    locked[cur] |= paths
+                out[cur].append(item)
+        # surface dropped items at the end so the executor / TUI can
+        # report them, rather than vanishing them silently
+        if dropped:
+            for d in dropped:
+                self.log.append("plan.dropped", d, actor="compiler")
         return [w for w in out if w]
 
     def compile(self, goal: str) -> CompiledPlan:

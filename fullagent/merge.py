@@ -31,6 +31,7 @@ the same distance from the ancestor).
 
 from __future__ import annotations
 
+import copy
 import hashlib
 from dataclasses import dataclass, field
 
@@ -119,26 +120,48 @@ class TimelineMerger:
         anc = self.ancestor(a, b)
         result = MergeResult(
             branch=name or f"merge/{a}+{b}", ancestor_seq=anc)
-        self.log.append("merge.started",
-                        {"a": a, "b": b, "ancestor": anc,
-                         "into": result.branch}, actor="human")
+        # never clobber an existing merge branch on a re-merge — rewind it
+        # would orphan its previous merged events silently
+        existing = set(self.log.branches())
+        if result.branch in existing:
+            n = 2
+            while f"{result.branch}-{n}" in existing:
+                n += 1
+            result.branch = f"{result.branch}-{n}"
 
         evs_a = [e for e in self.log.events(a)
                  if e.seq > anc and e.type not in _SKIP_TYPES]
         evs_b = [e for e in self.log.events(b)
                  if e.seq > anc and e.type not in _SKIP_TYPES]
-        keys_b: dict[str, Event] = {_payload_key(e): e for e in evs_b}
+        # multiset matching: identical payloads are matched ONE-TO-ONE.
+        # Membership-only matching collapsed legitimate repeats (a user
+        # message sent twice) into a single merged event.
+        count_b: dict[str, int] = {}
+        for e in evs_b:
+            count_b[_payload_key(e)] = count_b.get(_payload_key(e), 0) + 1
 
         # classify: shared (identical payload) vs exclusive
         for ev in evs_a:
-            twin = keys_b.get(_payload_key(ev))
-            if twin is not None:
+            key = _payload_key(ev)
+            if count_b.get(key, 0) > 0:
                 result.shared.append(ev)
+                count_b[key] -= 1
             else:
                 result.only_a.append(ev)
-        keys_a = {_payload_key(e) for e in evs_a}
-        result.only_b = [e for e in evs_b
-                         if _payload_key(e) not in keys_a]
+        count_a: dict[str, int] = {}
+        for e in evs_a:
+            count_a[_payload_key(e)] = count_a.get(_payload_key(e), 0) + 1
+        result.only_b = []
+        for e in evs_b:
+            key = _payload_key(e)
+            if count_a.get(key, 0) > 0:
+                count_a[key] -= 1  # twin already classified on the A side
+            else:
+                result.only_b.append(e)
+
+        self.log.append("merge.started",
+                        {"a": a, "b": b, "ancestor": anc,
+                         "into": result.branch}, actor="human")
 
         # file-write conflicts: same path, different content, both sides
         writes_a = {p: ev for ev in result.only_a
@@ -166,7 +189,6 @@ class TimelineMerger:
         fork_at = self.ancestor(a, b)
         merge_branch = result.branch
         # fork the merge branch from A at the ancestor, carrying A's base
-        seen_key: set[str] = set()
         # (fork seeds the branch; the shared ancestor events are already
         # on it through A's chain)
         self.log._heads[merge_branch] = self.log._event_at(
@@ -175,18 +197,19 @@ class TimelineMerger:
             self.log._heads.setdefault(merge_branch, None)
         replay = []
         for ev in result.only_a + result.only_b + result.shared:
-            key = _payload_key(ev)
-            if key in seen_key:
-                continue
-            seen_key.add(key)
+            # every classified copy replays — duplicates are REAL history
             if ev.type in _CONTENT_TYPES:
                 replay.append(ev)
         cur = self.log.branch
         self.log.branch = merge_branch
         try:
             for ev in replay:
-                self.log.append(ev.type, ev.data, actor="merge",
-                                provenance=ev.provenance)
+                # deep-copy the payload: the original event and the
+                # replayed one must never share a mutable dict — mutating
+                # either side would corrupt the other's content hash and
+                # break verify()
+                self.log.append(ev.type, copy.deepcopy(ev.data),
+                                actor="merge", provenance=ev.provenance)
         finally:
             self.log.branch = cur
         self.log.checkout(merge_branch)

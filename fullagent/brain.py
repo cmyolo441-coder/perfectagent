@@ -128,6 +128,8 @@ class Brain:
     def _load(self) -> None:
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return  # valid JSON, wrong shape — start fresh
             for d in data.get("memories", []):
                 try:
                     m = Memory.from_dict(d)
@@ -299,7 +301,11 @@ class Brain:
                 siblings = [m for m in episodes
                             if tag in (m.tags or _signature_tags(m.text))]
                 digest = siblings[0].text[:160]
-                exists = any(jaccard(digest, m.text) >= MERGE_SIMILARITY
+                # a distilled fact stores "<prefix> <digest>" — compare
+                # against the digest itself, not the decorated text, or
+                # the similarity gate never fires and every sleep
+                # re-distills the same theme forever
+                exists = any(digest in m.text
                              for m in self.memories.values()
                              if m.store == "semantic")
                 if not exists:

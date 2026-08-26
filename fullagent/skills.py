@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
+import os
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -43,9 +45,24 @@ ALLOWED_IMPORTS = frozenset(
 _FORBIDDEN_CALLS = frozenset(
     "eval exec compile open input __import__ globals locals vars setattr "
     "delattr breakpoint exit quit".split())
+# File/process-mutation attributes are only dangerous when the *receiver* is
+# a known dangerous module (os, shutil, pathlib, subprocess, io, builtins).
+# Matching the bare attribute name used to reject benign code such as
+# `class Door: def open(self): ...; Door().open()` — the dot is right, the
+# semantics are completely different.
 _FORBIDDEN_ATTRS = frozenset(
     "system popen exec execl execle execlp subprocess __subclasses__ "
-    "__globals__ __code__ __builtins__".split())
+    "__globals__ __code__ __builtins__ "
+    # filesystem mutation through allowed modules (pathlib/shutil-style):
+    # a "pure data-in/data-out" function never writes or deletes
+    "write_text write_bytes open unlink rmdir rename replace rmtree "
+    "touch mkdir symlink_to hardlink_to chmod chown".split())
+# Module roots whose attribute access is treated as dangerous. The bare
+# name `os.open`, `pathlib.Path.write_text`, `shutil.rmtree` are caught;
+# a custom class with its own `open()` method is left alone.
+_DANGEROUS_MODULES = frozenset(
+    "os shutil pathlib subprocess sys builtins io fcntl "
+    "posix nt _io".split())
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +109,19 @@ def _validate_shape(tree: ast.Module, skill: Skill) -> str | None:
     return None
 
 
+def _attr_root_is_dangerous(node: ast.Attribute) -> bool:
+    """Walk the receiver chain of `a.b.c.d` and return True iff the
+    leftmost name is a known dangerous module (os, shutil, ...). A method
+    call on a locally-defined object (e.g. `door.open()`) returns False
+    even when the attribute name itself is in the forbidden list."""
+    cur: ast.AST = node
+    while isinstance(cur, ast.Attribute):
+        cur = cur.value
+    if isinstance(cur, ast.Name):
+        return cur.id in _DANGEROUS_MODULES
+    return False
+
+
 def _validate_safety(tree: ast.Module) -> str | None:
     """AST scan: no forbidden imports, calls, attributes, or writes."""
     for node in ast.walk(tree):
@@ -108,8 +138,13 @@ def _validate_safety(tree: ast.Module) -> str | None:
             fn = node.func
             if isinstance(fn, ast.Name) and fn.id in _FORBIDDEN_CALLS:
                 return f"forbidden call: {fn.id}()"
-            if isinstance(fn, ast.Attribute) and fn.attr in _FORBIDDEN_ATTRS:
-                return f"forbidden attribute: .{fn.attr}"
+            if isinstance(fn, ast.Attribute) \
+                    and fn.attr in _FORBIDDEN_ATTRS \
+                    and _attr_root_is_dangerous(fn):
+                # only reject when the receiver chain is a known dangerous
+                # module — a user-defined `Door.open()` is fine
+                return (f"forbidden attribute on dangerous module: "
+                        f".{fn.attr}()")
         elif isinstance(node, ast.Attribute):
             if node.attr.startswith("__") and node.attr.endswith("__"):
                 return f"dunder access forbidden: {node.attr}"
@@ -187,7 +222,16 @@ class SkillForge:
         if self.skills_dir:
             try:
                 self.skills_dir.mkdir(parents=True, exist_ok=True)
-                (self.skills_dir / f"{skill.name}.py").write_text(skill.source)
+                src = self.skills_dir / f"{skill.name}.py"
+                tmp = src.with_suffix(".py.tmp")
+                tmp.write_text(skill.source, encoding="utf-8")
+                os.replace(tmp, src)
+                # metadata sidecar: entry/parameters/tests must survive the
+                # restart so load_persisted can re-run EVERY gate faithfully
+                meta = self.skills_dir / f"{skill.name}.json"
+                mtmp = meta.with_suffix(".json.tmp")
+                mtmp.write_text(json.dumps(skill.to_dict()), encoding="utf-8")
+                os.replace(mtmp, meta)
             except OSError:
                 pass  # in-memory registration still works without disk
         self.registry[skill.name] = skill
@@ -203,12 +247,21 @@ class SkillForge:
                                          delete=False) as f:
             f.write(skill.source)
             tmp = f.name
-        spec = importlib.util.spec_from_file_location(
-            f"fullagent_skill_{skill.name}", tmp)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-        return module.__dict__
+        try:
+            spec = importlib.util.spec_from_file_location(
+                f"fullagent_skill_{skill.name}", tmp)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            try:
+                spec.loader.exec_module(module)
+            finally:
+                sys.modules.pop(spec.name, None)
+            return module.__dict__
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
     def _reject(self, skill: Skill, reason: str) -> Skill:
         skill.status = "rejected"
@@ -221,7 +274,11 @@ class SkillForge:
     # -- reload persisted skills ------------------------------------------------
 
     def load_persisted(self) -> int:
-        """Re-register skills from the skills dir (restart survival)."""
+        """Re-register skills from the skills dir (restart survival).
+
+        A persisted skill is only trusted after it passes ALL FOUR gates
+        again against the on-disk source — disk content is never assumed
+        to be the same bytes that were validated before the restart."""
         if not self.skills_dir:
             return 0
         count = 0
@@ -229,17 +286,47 @@ class SkillForge:
             name = p.stem
             if name in self.registry:
                 continue
-            source = p.read_text()
-            # re-validate before trusting disk content
-            probe = Skill(name=name, description="(persisted)",
-                          source=source, entry=name)
+            try:
+                source = p.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            # metadata sidecar written at author() time; fall back to a
+            # name==entry guess for pre-sidecar layouts, but then the full
+            # gate run below decides — nothing registers unvalidated
+            meta_path = self.skills_dir / f"{name}.json"
+            entry = name
+            parameters: dict = {}
+            tests: list[dict] = []
+            description = "(persisted)"
+            if meta_path.exists():
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    entry = str(meta.get("entry") or name)
+                    parameters = dict(meta.get("parameters") or {})
+                    tests = list(meta.get("tests") or [])
+                    description = str(meta.get("description") or description)
+                except (OSError, ValueError):
+                    pass
+            skill = Skill(name=name, description=description,
+                          source=source, entry=entry,
+                          parameters=parameters, tests=tests)
+            # gates 1-4, exactly as author() runs them
             try:
                 tree = ast.parse(source)
             except SyntaxError:
                 continue
+            if _validate_shape(tree, skill) is not None:
+                continue
             if _validate_safety(tree) is not None:
                 continue
-            self.registry[name] = probe
+            try:
+                namespace = self._load(skill)
+            except Exception:
+                continue
+            if _run_tests(skill, namespace) is not None:
+                continue
+            skill.status = "registered"
+            self.registry[name] = skill
             count += 1
         return count
 

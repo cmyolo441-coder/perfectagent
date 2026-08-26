@@ -142,7 +142,8 @@ class Speculator:
         self.turn += 1
         self._expire()
         preds = predict(user_text, recent_tools)
-        fresh = [p for p in preds if p.key() not in self._cache]
+        with self._lock:
+            fresh = [p for p in preds if p.key() not in self._cache]
         if not fresh or self.runner is None:
             return 0
 
@@ -176,6 +177,12 @@ class Speculator:
         if tool not in SPECULATIVE_TOOLS:
             return None
         key = f"{tool}:{sorted(args.items())}"
+        # Counter increment AND the spec.hit event log BOTH live inside
+        # the lock now. The previous code released the lock between
+        # `del self._cache[key]` and `self.hits += 1`, so two threads
+        # asking for the same prefetched call could both miss-then-hit
+        # and the audit log would record spec.miss before spec.hit for
+        # what was actually a single legitimate cache hit.
         with self._lock:
             entry = self._cache.get(key)
             if entry is None:
@@ -184,10 +191,10 @@ class Speculator:
                                 actor="speculator")
                 return None
             del self._cache[key]
-        self.hits += 1
-        self.log.append("spec.hit", {"tool": tool, "args": args,
-                                     "chars": len(entry.result)},
-                        actor="speculator")
+            self.hits += 1
+            self.log.append("spec.hit", {"tool": tool, "args": args,
+                                         "chars": len(entry.result)},
+                            actor="speculator")
         return entry.result
 
     # -- housekeeping ------------------------------------------------------------

@@ -46,27 +46,36 @@ class _OperatorFlip(ast.NodeTransformer):
 
     def __init__(self, only_index: int) -> None:
         self.only_index = only_index
-        self.count = -1
+        # SEPARATE counters per operator kind. Sharing a single `count`
+        # made the third "operator site" ambiguous: a BinOp and a Compare
+        # op both incremented the same variable, so requesting index #2
+        # might mutate a Compare op when the caller expected a BinOp
+        # (and vice versa). The mutation result was structurally wrong
+        # even though the AST walked cleanly.
+        self._bin_count = -1
+        self._cmp_count = -1
 
     def visit_BinOp(self, node: ast.BinOp) -> ast.BinOp:
         self.generic_visit(node)
         repl = self.BIN.get(type(node.op))
         if repl:
-            self.count += 1
-            if self.count == self.only_index:
+            self._bin_count += 1
+            if self._bin_count == self.only_index:
                 node.op = repl()
         return node
 
     def visit_Compare(self, node: ast.Compare) -> ast.Compare:
         self.generic_visit(node)
+        # _flip uses the per-Compare counter; BinOp sites do not
+        # contaminate this path.
         node.ops = [self._flip(o) for o in node.ops]
         return node
 
     def _flip(self, op: ast.cmpop) -> ast.cmpop:
         repl = self.CMP.get(type(op))
         if repl:
-            self.count += 1
-            if self.count == self.only_index:
+            self._cmp_count += 1
+            if self._cmp_count == self.only_index:
                 return repl()
         return op
 
@@ -117,9 +126,21 @@ _MUTATORS = (
 
 
 def _count_sites(tree: ast.Module, cls) -> int:
+    """Walk a probe instance over a deep copy and return the number of
+    mutation sites it found. Each mutator class exposes one or more
+    per-kind counters (``_bin_count``, ``_cmp_count``, ...); the
+    classic single ``count`` attribute is also accepted for legacy
+    mutators like ``_ConditionNegate``."""
     probe = cls(only_index=-1)
     probe.visit(copy.deepcopy(tree))
-    return probe.count + 1
+    total = 0
+    for attr in vars(probe):
+        if not attr.endswith("_count") and attr != "count":
+            continue
+        v = getattr(probe, attr)
+        if isinstance(v, int):
+            total += v + 1
+    return total
 
 
 def generate_mutants(source: str,

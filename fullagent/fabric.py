@@ -154,10 +154,13 @@ class KnowledgeFabric:
         for f in rows:
             vfrom = time.strftime("%Y-%m-%d %H:%M",
                                   time.localtime(f.valid_from))
-            state = ("live" if f.live() else
-                     "expired @ " + time.strftime(
-                         "%Y-%m-%d %H:%M",
-                         time.localtime(f.valid_to)))
+            if f.live():
+                state = "live"
+            elif f.valid_to == _INFINITY:
+                state = "not yet valid"
+            else:
+                state = ("expired @ " + time.strftime(
+                    "%Y-%m-%d %H:%M", time.localtime(f.valid_to)))
             lines.append(f"  {f.obj:<30} valid from {vfrom} — "
                          f"{state}  (conf {f.confidence:.2f})")
         return "\n".join(lines)

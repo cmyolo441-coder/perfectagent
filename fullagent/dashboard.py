@@ -189,14 +189,29 @@ class Dashboard:
 
     def tail(self, since_seq: int = -1, limit: int = 12) -> list[dict]:
         """Newest events with seq > since_seq (oldest first), for a live
-        ticker. Cheap: walks the chain once."""
-        out = []
-        for ev in self.log.events():
-            if ev.seq > since_seq:
-                out.append({"seq": ev.seq, "type": ev.type,
-                            "actor": ev.actor,
-                            "summary": _summarise(ev.type, ev.data)})
-        return out[-limit:]
+        ticker. Cheap: walks the chain once.
+
+        The TUI polls this on every refresh tick. Walking the full chain
+        and materialising every event before slicing was O(N) per call —
+        for a 10k-event log with 200ms refresh the dashboard chewed CPU
+        for no reason. We now walk in REVERSE and stop the moment the
+        requested window is filled (or we cross the `since_seq` horizon)."""
+        if limit <= 0:
+            return []
+        events = self.log.events()
+        out: list[dict] = []
+        # oldest first in the result, so reverse-walk then prepend/reverse
+        # at the end
+        for ev in reversed(events):
+            if ev.seq <= since_seq:
+                break
+            out.append({"seq": ev.seq, "type": ev.type,
+                        "actor": ev.actor,
+                        "summary": _summarise(ev.type, ev.data)})
+            if len(out) >= limit:
+                break
+        out.reverse()
+        return out
 
 
 def _summarise(type_: str, data: dict) -> str:

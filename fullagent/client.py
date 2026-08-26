@@ -78,8 +78,78 @@ class StreamResult:
     model: str = ""
 
 
+def assistant_message(content: str | None, tool_calls: list[dict],
+                      reasoning: str = "") -> dict:
+    """Build an assistant message that is valid for thinking-aware
+    backends.
+
+    Providers like TokenRouter (Qwen3) validate the *history*: any
+    assistant turn that carried tool_calls must also carry
+    reasoning_content when the model was invoked with thinking enabled
+    (reasoning_effort=low). If the history was built while reasoning
+    was stripped, the next request fails with
+    'messages[N].reasoning_content is required for thinking tool-call
+    history'.
+
+    This helper guarantees the invariant: tool-call turns always carry
+    reasoning_content (real reasoning when available, else an empty
+    string), so history never becomes invalid regardless of the
+    provider's suppression mode.
+    """
+    msg: dict[str, Any] = {"role": "assistant"}
+    # OpenAI spec: content is nullable when tool_calls are present. Preserve
+    # any string the backend gave us — empty/whitespace text from a reasoning
+    # model that spent the budget on thinking is a legitimate reply, not the
+    # same as "no content at all". Using truthiness here was turning real
+    # "" / " " replies into None and corrupting conversation history.
+    msg["content"] = content if content is not None else None
+    if tool_calls:
+        msg["tool_calls"] = tool_calls
+    # Always carry reasoning_content when reasoning exists OR when the
+    # turn carried tool_calls (history validation requires it).  Set
+    # both keys for maximum provider compatibility.
+    if reasoning:
+        msg["reasoning_content"] = reasoning
+        # some providers also accept "reasoning"
+        msg["reasoning"] = reasoning
+    elif tool_calls:
+        msg["reasoning_content"] = ""
+    return msg
+
+
+def _sanitize_messages(messages: list[dict]) -> bool:
+    """Ensure history satisfies thinking validation.
+
+    Mutates `messages` in place: any assistant message with tool_calls
+    that lacks reasoning_content/reasoning gets an empty
+    reasoning_content. Returns True if anything was fixed.
+
+    Note: an existing empty string ("") counts as present — the
+    provider only requires the field to exist, not to be non-empty.
+    """
+    fixed = False
+    for m in messages:
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            has_rc = m.get("reasoning_content") is not None
+            has_r = m.get("reasoning") is not None
+            if has_rc or has_r:
+                continue
+            m["reasoning_content"] = ""
+            fixed = True
+    return fixed
+
+
+def _is_reasoning_content_error(err: Exception) -> bool:
+    """True if an APIError is the reasoning_content validation."""
+    msg = str(err).lower()
+    return "reasoning_content" in msg and "required" in msg
+
+
 def build_payload(model: Model, effort: Effort, messages: list[dict],
                   tools: list[dict] | None, stream: bool = True) -> dict:
+    # sanitize history before it hits the wire — fixes stale sessions that
+    # were built before reasoning_content was preserved
+    _sanitize_messages(messages)
     payload: dict[str, Any] = {
         "model": model.id,
         "messages": messages,
@@ -349,14 +419,17 @@ def _iter_sse_events(resp: requests.Response) -> Iterator[dict]:
 def _extract_error_message(body: str) -> str:
     try:
         obj = json.loads(body)
-        err = obj.get("error")
-        if isinstance(err, dict):
-            return str(err.get("message") or err)
-        if isinstance(err, str):
-            return err
-        return body[:500]
     except ValueError:
         return body[:500]
+    if not isinstance(obj, dict):
+        # valid JSON but not an object (array/string/number) — no shape to dig
+        return body[:500]
+    err = obj.get("error")
+    if isinstance(err, dict):
+        return str(err.get("message") or err)
+    if isinstance(err, str):
+        return err
+    return body[:500]
 
 
 # -- context-overflow detection + self-healing ------------------------------
@@ -510,6 +583,7 @@ def chat_stream(provider: Provider, model: Model, effort: Effort,
                 on_token: Callable[[str], None] | None = None,
                 on_reasoning: Callable[[str], None] | None = None,
                 on_tool_start: Callable[[str], None] | None = None,
+                on_tool_args: Callable[[str, str], None] | None = None,
                 should_cancel: Callable[[], bool] | None = None,
                 on_overflow: Callable[[], bool] | None = None,
                 timeout: float = config.DEFAULT_TIMEOUT) -> StreamResult:
@@ -552,10 +626,22 @@ def chat_stream(provider: Provider, model: Model, effort: Effort,
         try:
             result = _chat_stream_with_retries(
                 url, headers, payload, on_token, on_reasoning, on_tool_start,
-                should_cancel, timeout)
+                on_tool_args, should_cancel, timeout)
             _learn_from_usage(result.usage, sent_chars, model.id)
             return result
         except APIError as e:
+            # reasoning_content validation — heal history and retry once
+            if _is_reasoning_content_error(e):
+                if _sanitize_messages(messages):
+                    continue
+                # already sanitized but provider still rejects — try
+                # stripping reasoning entirely and retry with sanitized copy
+                # (some providers accept empty string, some need removal)
+                # we already sanitized, so just raise with clearer guidance
+                raise APIError(
+                    f"{e} — history was sanitized but provider still "
+                    f"rejects. Try /new or /rewind to clear the stale "
+                    f"thinking turn.") from e
             healed = _heal_overflow(model, current_effort, e,
                                     overflow_attempt, sent_chars)
             if healed is not None:
@@ -602,17 +688,42 @@ def _heal_overflow(model: Model, effort: Effort, error: APIError,
 
 def _chat_stream_with_retries(url: str, headers: dict, payload: dict,
                                on_token, on_reasoning, on_tool_start,
-                               should_cancel, timeout: float) -> StreamResult:
+                               on_tool_args, should_cancel,
+                               timeout: float) -> StreamResult:
     """The plain retry loop (rate limits, timeouts, connection errors, and
-    TokenRouter cold-admission rejections)."""
+    TokenRouter cold-admission rejections).
+
+    A retry restarts the WHOLE request — once any token has already been
+    streamed to the UI a restart would replay (duplicate) the completion on
+    top of the partial output, so mid-output failures surface immediately
+    instead of being retried."""
     last_error: Exception | None = None
     cold_retries = 0
     attempt = 0
+    emitted = {"out": False}
+
+    def _tok(piece: str) -> None:
+        emitted["out"] = True
+        if on_token:
+            on_token(piece)
+
+    def _reason(piece: str) -> None:
+        emitted["out"] = True
+        if on_reasoning:
+            on_reasoning(piece)
+
+    def _targs(name: str, chunk: str) -> None:
+        # tool-call arguments are already flowing to the UI — a retry now
+        # would replay them on top of the live write, so mark as emitted
+        emitted["out"] = True
+        if on_tool_args:
+            on_tool_args(name, chunk)
+
     while attempt < MAX_RETRIES:
         try:
             return _chat_stream_once(url, headers, payload,
-                                     on_token, on_reasoning, on_tool_start,
-                                     should_cancel, timeout)
+                                     _tok, _reason, on_tool_start,
+                                     _targs, should_cancel, timeout)
         except TurnCancelled:
             raise
         except APIError as e:
@@ -639,14 +750,18 @@ def _chat_stream_with_retries(url: str, headers: dict, payload: dict,
             raise
         except requests.exceptions.Timeout as e:
             last_error = e
-            if attempt < MAX_RETRIES - 1:
+            if attempt < MAX_RETRIES - 1 and not emitted["out"]:
                 time.sleep(0.5)
                 attempt += 1
                 continue
             raise APIError(f"request timed out after {timeout}s") from e
-        except requests.exceptions.ConnectionError as e:
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.ChunkedEncodingError) as e:
+            # ChunkedEncodingError is the typical MID-STREAM disconnect
+            # (urllib3 ProtocolError / IncompleteRead) — without catching
+            # it here it bypasses the retry budget entirely
             last_error = e
-            if attempt < MAX_RETRIES - 1:
+            if attempt < MAX_RETRIES - 1 and not emitted["out"]:
                 time.sleep(0.5)
                 attempt += 1
                 continue
@@ -656,7 +771,8 @@ def _chat_stream_with_retries(url: str, headers: dict, payload: dict,
 
 def _chat_stream_once(url: str, headers: dict, payload: dict,
                       on_token, on_reasoning, on_tool_start,
-                      should_cancel, timeout: float) -> StreamResult:
+                      on_tool_args, should_cancel,
+                      timeout: float) -> StreamResult:
     result = StreamResult()
     tc_acc: dict[int, ToolCallDelta] = {}
     announced_tools: set[int] = set()
@@ -670,6 +786,13 @@ def _chat_stream_once(url: str, headers: dict, payload: dict,
     resp.encoding = "utf-8"
 
     try:
+        ctype = (resp.headers.get("Content-Type") or "").lower()
+        if "text/event-stream" not in ctype:
+            # Some providers return a non-streamed JSON body even when
+            # stream=true was requested — parse it like blocking mode
+            # instead of silently dropping the whole completion.
+            data = resp.json()
+            return _result_from_json(data, str(data.get("model") or ""))
         for event in _iter_sse_events(resp):
             if should_cancel is not None and should_cancel():
                 raise TurnCancelled()
@@ -698,8 +821,12 @@ def _chat_stream_once(url: str, headers: dict, payload: dict,
                 if on_token:
                     on_token(piece)
 
-            # reasoning / thinking is OFF globally — any thinking deltas a
-            # backend still leaks are dropped, never accumulated or streamed
+            reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+            if reasoning:
+                result.reasoning += reasoning
+                if on_reasoning:
+                    on_reasoning(reasoning)
+
             for tc in delta.get("tool_calls") or []:
                 idx = tc.get("index", 0)
                 acc = tc_acc.setdefault(idx, ToolCallDelta())
@@ -713,6 +840,8 @@ def _chat_stream_once(url: str, headers: dict, payload: dict,
                         on_tool_start(acc.name)
                 if fn.get("arguments"):
                     acc.arguments += fn["arguments"]
+                    if on_tool_args:
+                        on_tool_args(acc.name, fn["arguments"])
     finally:
         resp.close()
 
@@ -724,9 +853,6 @@ def _chat_stream_once(url: str, headers: dict, payload: dict,
             "function": {"name": acc.name, "arguments": acc.arguments},
         })
 
-    # Some providers return a non-streamed JSON body even when stream=true.
-    if not result.content and not result.tool_calls and not result.reasoning:
-        pass
     return result
 
 
@@ -748,6 +874,29 @@ def _post_with_cold_retries(url: str, headers: dict, payload: dict,
         last = err
         time.sleep(COLD_RETRY_WAIT * (cold + 1))
     raise last
+
+
+def _result_from_json(data: dict, model_id: str) -> StreamResult:
+    """Parse a non-streamed chat.completion JSON body into a StreamResult
+    (shared by blocking mode and the stream-mode JSON fallback)."""
+    result = StreamResult(model=data.get("model", model_id),
+                          usage=data.get("usage"))
+    choices = data.get("choices") or []
+    if choices:
+        msg = choices[0].get("message") or {}
+        result.content = msg.get("content") or ""
+        result.reasoning = (msg.get("reasoning_content")
+                            or msg.get("reasoning") or "")
+        result.finish_reason = choices[0].get("finish_reason")
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            result.tool_calls.append({
+                "id": tc.get("id", "call_0"),
+                "type": "function",
+                "function": {"name": fn.get("name", ""),
+                             "arguments": fn.get("arguments", "")},
+            })
+    return result
 
 
 def chat_blocking(provider: Provider, model: Model, effort: Effort,
@@ -784,6 +933,12 @@ def chat_blocking(provider: Provider, model: Model, effort: Effort,
         try:
             resp = _post_with_cold_retries(url, headers, payload, timeout)
         except APIError as err:
+            if _is_reasoning_content_error(err):
+                if _sanitize_messages(messages):
+                    continue
+                raise APIError(
+                    f"{err} — history was sanitized but provider still "
+                    f"rejects. Try /new or /rewind.") from err
             healed = _heal_overflow(model, current_effort, err,
                                     overflow_attempt, sent_chars)
             if healed is not None:
@@ -795,23 +950,8 @@ def chat_blocking(provider: Provider, model: Model, effort: Effort,
                 continue
             raise
         data = resp.json()
-        result = StreamResult(model=data.get("model", model.id),
-                              usage=data.get("usage"))
+        result = _result_from_json(data, model.id)
         _learn_from_usage(result.usage, sent_chars, model.id)
-        choices = data.get("choices") or []
-        if choices:
-            msg = choices[0].get("message") or {}
-            result.content = msg.get("content") or ""
-            # reasoning is OFF globally — dropped, never stored
-            result.finish_reason = choices[0].get("finish_reason")
-            for tc in msg.get("tool_calls") or []:
-                fn = tc.get("function") or {}
-                result.tool_calls.append({
-                    "id": tc.get("id", "call_0"),
-                    "type": "function",
-                    "function": {"name": fn.get("name", ""),
-                                 "arguments": fn.get("arguments", "")},
-                })
         return result
 
     raise APIError(

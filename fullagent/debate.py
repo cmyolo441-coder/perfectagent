@@ -95,6 +95,7 @@ class DebateTournament:
         self.speaker = speaker
         self.models = models or []
         self.trust: dict[str, float] = {}
+        self._champion_cluster: set[str] = set()
         self._load_trust()
 
     # -- calibration persistence (from the event log — the only source) ----
@@ -182,6 +183,11 @@ class DebateTournament:
         finals = [(p, p.revised or p.answer) for p in positions]
         result.verdict, result.champion_model, result.clusters, \
             result.dissent = self._fuse(finals)
+        # remember the winning cluster so confirm() can credit every
+        # member that argued the winning position, not just the champion
+        self._champion_cluster = (
+            set(result.clusters[0]) if result.clusters
+            else {result.champion_model})
         self.log.append("debate.verdict", result.to_dict(),
                         actor="kernel")
         return result
@@ -247,8 +253,12 @@ class DebateTournament:
     def confirm(self, verdict_model: str) -> dict:
         """The verdict's cluster was RIGHT: its members gain trust, the
         dissenters decay. verdict_model = the champion from the result."""
+        winners = self._champion_cluster or {verdict_model}
+        if verdict_model not in winners:
+            # confirming an off-cluster model: credit just that model
+            winners = {verdict_model}
         for m in self.models:
-            self._update(m, won=(m == verdict_model))
+            self._update(m, won=(m in winners))
         return dict(self.trust)
 
     def refute(self, dissent_model: str) -> dict:

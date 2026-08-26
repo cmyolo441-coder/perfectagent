@@ -140,6 +140,14 @@ class Theater:
         if target is None:
             raise ValueError(f"no event at seq {seq}")
         branch = name or f"cf/{seq}-{target.type}"
+        # never clobber an existing branch — a second counterfactual at
+        # the same seq would rewind the first one's head silently
+        existing = set(self.log.branches())
+        if branch in existing:
+            n = 2
+            while f"{branch}-{n}" in existing:
+                n += 1
+            branch = f"{branch}-{n}"
         # fork from the event BEFORE the removed one
         base = self.log._event_at(self.log.branch, seq - 1)
         self.log._heads[branch] = base.id if base else None

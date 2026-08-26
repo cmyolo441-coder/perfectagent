@@ -45,7 +45,7 @@ _NEED_PATTERNS = [
     ("write", re.compile(r"\b(write|create|implement|build|refactor|"
                          r"fix|edit|patch)\b", re.I)),
     ("run", re.compile(r"\b(run|execute|test|benchmark|measure|"
-                       r"install|deploy|debug|reproduce|diagnos)\b",
+                       r"install|deploy|debug|reproduce|diagnos\w*)\b",
                        re.I)),
     ("read", re.compile(r"\b(read|review|analy[sz]e|inspect|map|"
                         r"research|plan|document)\b", re.I)),

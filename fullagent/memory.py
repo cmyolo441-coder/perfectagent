@@ -81,6 +81,16 @@ class Hippocampus:
                         confidence: str = "definitive") -> dict:
         """Record an approach known NOT to work. Emit 'deadend.recorded'.
         signature = canonical hash/id of the approach. Returns the dict."""
+        signature = (signature or "").strip()
+        # an empty signature would make is_dead_end("") match every
+        # caller's query, freezing the agent into thinking "everything has
+        # failed". Refuse to seal such a record so the bug is loud, not
+        # silent.
+        if not signature:
+            raise ValueError("record_dead_end requires a non-empty signature")
+        if not (reason or "").strip():
+            # same reasoning — a dead-end without a reason is an audit hole
+            raise ValueError("record_dead_end requires a non-empty reason")
         record = {
             "signature": signature,
             "reason": reason,

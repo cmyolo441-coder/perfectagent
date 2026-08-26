@@ -103,8 +103,14 @@ def _parse_synthesis(text: str) -> tuple[str, float, str]:
     """(winner A|B|DRAW, confidence, reason) from the judge's reply."""
     wm = _WINNER_RE.search(text)
     winner = wm.group(1).upper() if wm else "DRAW"
+    # The judge has to write "CONFIDENCE: NN%" or the parse fails. The
+    # previous default of 50.0 was a coin-flip — a non-compliant judge
+    # got its verdict trusted at exactly the bar of "no information".
+    # A missing or unparseable confidence is genuinely "unknown", not
+    # 50/50, so we default to 0.0 (the verdict is still recorded, but
+    # the caller can see there's no signal and act accordingly).
     cm = _CONF_RE.search(text)
-    conf = float(cm.group(1)) if cm else 50.0
+    conf = float(cm.group(1)) if cm else 0.0
     rm = re.search(r"reason:\s*(.+)", text, re.IGNORECASE | re.DOTALL)
     reason = rm.group(1).strip() if rm else ""
     return winner, min(100.0, max(0.0, conf)), reason[:300]

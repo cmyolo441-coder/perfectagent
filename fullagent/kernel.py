@@ -88,9 +88,17 @@ class Event:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Event":
-        return cls(seq=d["seq"], id=d["id"], parent=d.get("parent"),
+        seq = d["seq"]
+        if not isinstance(seq, int) or isinstance(seq, bool):
+            raise ValueError(f"event seq is not an int: {seq!r}")
+        data = d.get("data", {})
+        if not isinstance(data, dict):
+            raise ValueError("event data is not an object")
+        if not isinstance(d.get("type"), str):
+            raise ValueError("event type is not a string")
+        return cls(seq=seq, id=d["id"], parent=d.get("parent"),
                    branch=d.get("branch", "main"), ts=d.get("ts", 0.0),
-                   type=d["type"], data=d.get("data", {}),
+                   type=d["type"], data=data,
                    session=d.get("session", ""),
                    actor=d.get("actor", "system"),
                    causation_id=d.get("causation_id"),
@@ -280,7 +288,11 @@ class EventLog:
     def _write_event(self, ev: Event) -> None:
         if self._fh is None:
             self._fh = self.path.open("a", encoding="utf-8")
-        self._fh.write(json.dumps(ev.to_dict(), ensure_ascii=False) + "\n")
+        # default=str must match Event.compute_id's canonicalization —
+        # otherwise a value that hashed fine fails to serialize AFTER the
+        # in-memory state already advanced past it
+        self._fh.write(json.dumps(ev.to_dict(), ensure_ascii=False,
+                                  default=str) + "\n")
         self._fh.flush()
         self._writes_since_sync += 1
         if self._writes_since_sync >= self._SYNC_EVERY:
@@ -322,10 +334,13 @@ class EventLog:
                        ts=ts, type=type_, data=data, session=sess,
                        actor=actor, causation_id=caus,
                        correlation_id=correlation_id, provenance=provenance)
+            # persist FIRST — if serialization or the write fails, the
+            # in-memory log must not advance (it would diverge from disk
+            # and burn a seq / move a head for an event that never landed)
+            self._persist(ev)
             self._events.append(ev)
             self._by_id[eid] = ev
             self._heads[br] = eid
-            self._persist(ev)
             return ev
 
     # -- chain walking -------------------------------------------------------
@@ -422,9 +437,16 @@ class EventLog:
             target = max(-1, min(seq, current))
             base = self._event_at(br, target)
             self._heads[br] = base.id if base else None
+            # the per-branch chain cache and fold cache still hold the
+            # pre-rewind chain; without invalidation the next _chain()
+            # call would walk from the new head and fail to find the
+            # cached tail (the old head is ABOVE the new head, not below),
+            # forcing a full O(n) rebuild. Drop both caches here.
+            self._chains.pop(br, None)
+            self._fold_cache.pop(br, None)
             marker = self.append("kernel.rewind",
                                  {"branch": br, "from": current,
-                                  "to": target})
+                                  "to": target}, branch=br)
             return marker.seq
 
     def fork(self, at_seq: int | None = None,
@@ -438,7 +460,21 @@ class EventLog:
             src = self.branch
             at = self.head(src) if at_seq is None else at_seq
             base = self._event_at(src, at)
-            new_name = name or f"branch-{len(self.branches()) + 1}"
+            if name:
+                # never clobber an existing branch — a second fork with the
+                # same name would silently rewind the first one's head and
+                # orphan its exclusive events
+                new_name = name
+                n = 2
+                while new_name in self._heads:
+                    new_name = f"{name}-{n}"
+                    n += 1
+            else:
+                new_name = f"branch-{len(self.branches()) + 1}"
+                n = 2
+                while new_name in self._heads:
+                    new_name = f"branch-{len(self.branches()) + 1}-{n}"
+                    n += 1
             self._heads[new_name] = base.id if base else None
             self.append("kernel.branch",
                         {"from": src, "at_seq": base.seq if base else -1,
@@ -530,7 +566,7 @@ ADVANCED_EVENT_TYPES = frozenset({
 def _fold_apply(st: State, ev: Event) -> None:
     """Apply ONE event to a State projection (the reduce step)."""
     st.head_seq = ev.seq
-    d = ev.data
+    d = ev.data if isinstance(ev.data, dict) else {}
     t = ev.type
 
     if t == "user.message":
@@ -543,17 +579,21 @@ def _fold_apply(st: State, ev: Event) -> None:
         name = d.get("name", "")
         if name == "run_command":
             st.commands_run += 1
-        if name in _MUTATING_TOOLS and d.get("args"):
-            p = d["args"].get("path") or d["args"].get("dst")
+        args = d.get("args")
+        if name in _MUTATING_TOOLS and isinstance(args, dict):
+            p = args.get("path") or args.get("dst")
             if p:
                 st.files_touched.add(str(p))
     elif t == "tool.result":
         if d.get("status") == "error":
             st.tool_errors += 1
     elif t == "cost.incurred":
-        st.cost_usd += float(d.get("usd", 0.0))
-        st.tokens_in += int(d.get("tokens_in", 0))
-        st.tokens_out += int(d.get("tokens_out", 0))
+        try:
+            st.cost_usd += float(d.get("usd", 0.0) or 0.0)
+            st.tokens_in += int(d.get("tokens_in", 0) or 0)
+            st.tokens_out += int(d.get("tokens_out", 0) or 0)
+        except (TypeError, ValueError):
+            pass  # corrupt numeric field — skip, never brick the fold
     elif t == "memory.episode":
         st.episodes.append(d)
     elif t == "deadend.recorded":
@@ -565,7 +605,10 @@ def _fold_apply(st: State, ev: Event) -> None:
     elif t == "goal.clause.done":
         st.goal_done.append(d.get("clause", ""))
     elif t == "autonomy.changed":
-        st.autonomy = int(d.get("level", st.autonomy))
+        try:
+            st.autonomy = int(d.get("level", st.autonomy))
+        except (TypeError, ValueError):
+            pass
     elif t in ADVANCED_EVENT_TYPES:
         st.advanced_events.append({"type": t, **d})
     elif t == "prompt.sealed":
@@ -690,6 +733,13 @@ def fold(log: EventLog, branch: str | None = None,
             continue
         _fold_apply(st, ev)
     return st
+
+
+def replay(log: EventLog, branch: str | None = None,
+           upto_seq: int | None = None) -> list[Event]:
+    """Events of a branch in seq order — the raw material every fold
+    consumes; §26 text-film replays iterate this."""
+    return log.events(branch or log.branch, upto_seq)
 
 
 def _fold_cached(log: EventLog, br: str) -> State:

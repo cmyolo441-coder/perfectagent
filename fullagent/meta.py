@@ -29,7 +29,7 @@ from dataclasses import dataclass
 
 from . import systemprompt
 from .kernel import EventLog
-from .team import ROLES
+from .team import MAX_WORKERS, ROLES
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{2,20}$")
 _MIN_BRIEF_CHARS = 80
@@ -170,7 +170,7 @@ class RoleForge:
                              "writes": draft.writes}
         systemprompt.ROLE_BRIEFS[draft.name] = draft.brief
         systemprompt.register(f"worker:{draft.name}",
-                              systemprompt.worker(draft.name))
+                              systemprompt.worker(draft.name, MAX_WORKERS))
 
     def roster(self) -> list[str]:
         return sorted(ROLES)

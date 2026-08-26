@@ -168,8 +168,7 @@ class WorldModel:
                     current["changed"].append(p)
             elif ev.type == "tool.result":
                 if ev.data.get("status") == "error":
-                    name = str(ev.data.get("name", ""))
-                    current["failed"].append(name)
+                    current["failed"].extend(current["changed"])
         if current is not None:
             turns.append(current)
         for t in turns:

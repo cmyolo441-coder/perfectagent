@@ -33,6 +33,7 @@ from typing import Callable
 
 from . import systemprompt
 from .kernel import EventLog, fold
+from .team import MAX_WORKERS
 
 # a candidate must beat the incumbent by this margin to deploy
 DEPLOY_MARGIN = 0.10
@@ -96,12 +97,16 @@ class EvolutionEngine:
         """Trailing success rate per role from sealed worker reports —
         done=1.0, blocked=0.4, error=0.0, newest reports weigh double."""
         scores: dict[str, list[float]] = {}
+        # Filter to evolvable roles BEFORE slicing the window. The old
+        # order (slice then filter) meant a chatty non-evolvable role
+        # like `main` or `master` could push real evolvable events out
+        # of the window — a role with declining performance looked
+        # stable because its decline fell off the end of the slice.
         events = [e.data for e in self.log.events()
-                  if e.type == "crew.done"]
+                  if e.type == "crew.done"
+                  and str(e.data.get("role", "")).strip() in _EVOLVABLE]
         for d in events[-EVAL_WINDOW * len(_EVOLVABLE):]:
             role = str(d.get("role", "")).strip()
-            if role not in _EVOLVABLE:
-                continue
             status = d.get("status") or d.get("state") or ""
             score = {"done": 1.0, "blocked": 0.4}.get(status, 0.0)
             scores.setdefault(role, []).append(score)
@@ -171,7 +176,7 @@ class EvolutionEngine:
         # prompt — the Mastermind vault re-seals it on next resolve
         systemprompt.ROLE_BRIEFS[role] = best_text
         systemprompt.register(f"worker:{role}",
-                              systemprompt.worker(role))
+                              systemprompt.worker(role, MAX_WORKERS))
         self.log.append("evolution.deployed",
                         {"gen": gen.gen, "role": role,
                          "old": incumbent, "new": best_text,
@@ -196,7 +201,7 @@ class EvolutionEngine:
             return "deployed event carried no old text — cannot roll back"
         systemprompt.ROLE_BRIEFS[role] = old
         systemprompt.register(f"worker:{role}",
-                              systemprompt.worker(role))
+                              systemprompt.worker(role, MAX_WORKERS))
         self.log.append("evolution.rollback", {"role": role}, actor="human")
         return f"rolled back {role} to its pre-evolution brief"
 

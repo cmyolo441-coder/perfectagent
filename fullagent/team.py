@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from .client import APIError, chat_blocking, shrink_tool_outputs
 
 MAX_WORKER_STEPS = 96      # tool-loop budget per worker (big-project grade)
+MAX_WORKERS = 8            # roster ceiling; baked into worker prompts
 MAX_SUMMARY_CHARS = 1800
 RATE_LIMIT_RETRIES = 8     # retries when the provider rate-limits a worker
 RATE_LIMIT_BASE_WAIT = 2.0  # seconds; doubles each retry (+ jitter)
@@ -141,7 +142,14 @@ class WorkerReport:
 
 def parse_worker_final(text: str) -> tuple[str, str]:
     """Split a worker's final reply into (status, summary). Shared by
-    the persistent Crew and every subsystem that reads worker reports."""
+    the persistent Crew and every subsystem that reads worker reports.
+
+    Status taxonomy: a worker says ``STATUS: DONE|BLOCKED|ERROR``. Earlier
+    this code only recognised BLOCKED and silently swallowed every other
+    failure label (ERROR, FAILED, TIMEOUT, ...) as ``done`` — a worker that
+    timed out would be marked successful, the contract would close, and
+    the dead-end would be lost. We now default to ``error`` for any
+    non-DONE / non-BLOCKED label so genuine failures stay visible."""
     status = "done"
     lines = text.strip().splitlines()
     summary_lines: list[str] = []
@@ -149,7 +157,14 @@ def parse_worker_final(text: str) -> tuple[str, str]:
         low = line.strip().upper()
         if low.startswith("STATUS:"):
             val = line.split(":", 1)[1].strip().upper()
-            status = "blocked" if val.startswith("BLOCK") else "done"
+            if val.startswith("DONE") or not val:
+                status = "done"
+            elif val.startswith("BLOCK"):
+                status = "blocked"
+            else:
+                # explicit ERROR / FAILED / TIMEOUT / anything unknown:
+                # surface as error so callers (Crew, Healer) can act on it
+                status = "error"
         elif low.startswith("SUMMARY:"):
             summary_lines.append(line.split(":", 1)[1].strip())
         elif summary_lines:
@@ -187,6 +202,8 @@ def chat_with_retry(provider, model, effort, messages: list[dict],
             if not rate_limited:
                 raise
             last_err = e
+            if attempt >= RATE_LIMIT_RETRIES - 1:
+                break  # last attempt — no point sleeping after the verdict
             wait = RATE_LIMIT_BASE_WAIT * (2 ** attempt) \
                 + random.uniform(0, 1.5)
             time.sleep(wait)

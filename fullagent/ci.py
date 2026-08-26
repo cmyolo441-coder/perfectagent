@@ -189,8 +189,8 @@ class CIPilot:
                  f"  streaks: {self.streak_green} green · "
                  f"{self.streak_red} red · {len(self.records)} run(s)"]
         if last:
-            lines.append(f"  last: {'✓ green' if last.passed else
-                                     '✗ RED'} — changed "
+            mark = "✓ green" if last.passed else "✗ RED"
+            lines.append(f"  last: {mark} — changed "
                          + ", ".join(last.changed[:4]))
         return "\n".join(lines)
 

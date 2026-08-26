@@ -56,12 +56,21 @@ MODEL_TABLE: dict[str, dict] = {
     "gpt-5.2":                   {"capability": 0.92, "cost_in": 0.005,
                                   "cost_out": 0.020, "tools": True,
                                   "reasoning": True},
+    "muse-spark-1.2-contributor-free": {"capability": 0.82, "cost_in": 0.0,
+                                       "cost_out": 0.0, "tools": True,
+                                       "reasoning": True},
+    "opencode/muse-spark-1.2-contributor-free": {"capability": 0.82, "cost_in": 0.0,
+                                               "cost_out": 0.0, "tools": True,
+                                               "reasoning": True},
     "qwen/qwen3.8-max-free":     {"capability": 0.70, "cost_in": 0.0,
                                   "cost_out": 0.0, "tools": True,
                                   "reasoning": True},
     "deepseek-ai/DeepSeek-V3.2": {"capability": 0.80, "cost_in": 0.00027,
                                   "cost_out": 0.0011, "tools": True,
                                   "reasoning": True},
+    "deepseek/deepseek-v4-pro-0813-free": {"capability": 0.85, "cost_in": 0.0,
+                                          "cost_out": 0.0, "tools": True,
+                                          "reasoning": True},
     "moonshotai/Kimi-K2-Instruct": {"capability": 0.78, "cost_in": 0.0006,
                                     "cost_out": 0.0025, "tools": True,
                                     "reasoning": False},
@@ -188,7 +197,7 @@ class Router:
         # Quality guardrail: require a capability MARGIN above the task's
         # difficulty, so a hard task never sits right at a cheap model's
         # ceiling. This is what forces genuine escalation.
-        required = max(0.30, min(0.97, diff.score + 0.15))
+        required = max(0.30, min(0.97, diff.score + 0.25))
 
         if prefer and prefer in self.table:
             spec = self.table[prefer]
@@ -204,17 +213,33 @@ class Router:
         candidates = [m for m in self.table
                       if self._capable(m, diff)
                       and self.table[m]["capability"] >= required]
+        escalated = False
         if not candidates:
             # nothing cheap clears the bar -> strongest capable model
             candidates = [m for m in self.table if self._capable(m, diff)]
             escalated = True
+        if not candidates:
+            # even the fallback capability check cleared nothing (custom
+            # table without a tool-capable model, or an empty table) —
+            # degrade to the table's best instead of raising ValueError
+            if not self.table:
+                choice = RouteChoice(_STRONGEST, diff.score,
+                                     "no models in routing table — "
+                                     f"defaulting to '{_STRONGEST}'",
+                                     escalated=True, est_cost=0.0)
+                self._seal(task, diff, choice)
+                return choice
+            candidates = list(self.table)
+            escalated = True
+        if escalated:
+            best = max(candidates,
+                       key=lambda m: (self.table[m]["capability"],
+                                      -self._cost(m, est_tokens)))
         else:
-            escalated = False
-
-        # cheapest first; break ties toward higher capability
-        best = min(candidates,
-                   key=lambda m: (self._cost(m, est_tokens),
-                                  -self.table[m]["capability"]))
+            # cheapest first; break ties toward higher capability
+            best = min(candidates,
+                       key=lambda m: (self._cost(m, est_tokens),
+                                      -self.table[m]["capability"]))
         spec = self.table[best]
         reason = (f"difficulty {diff.score:.2f} -> cheapest capable "
                   f"'{best}' (cap {spec['capability']:.2f})")

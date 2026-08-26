@@ -156,13 +156,13 @@ class BudgetGovernor:
     def __init__(self, log: EventLog, budget: Budget | None = None) -> None:
         self.log = log
         self.budget = budget or Budget()
-        self.baseline_seq = 0   # reset() anchor: ignore events <= this
+        self.baseline_seq = -1  # reset() anchor: ignore events <= this
         self._last_reason = ""  # dedupe budget.event spam while paused
 
     def _session_start(self) -> int:
-        """seq of the latest session.start (0 if none) — where the current
-        session's spend begins."""
-        start = 0
+        """seq of the latest session.start (-1 if none) — where the current
+        session's spend begins. -1 (not 0) so seq-0 events still count."""
+        start = -1
         for ev in self.log.events():
             if ev.type == "session.start" and ev.seq > start:
                 start = ev.seq

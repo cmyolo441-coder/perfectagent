@@ -28,11 +28,19 @@ from __future__ import annotations
 
 import re
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 from .kernel import EventLog
 
 _ESCALATE_BAR = 0.62
+# A hard cap on the answer cache. Without it, a long-lived agent
+# (the README pitches multi-hour sessions) leaks memory unbounded: a
+# prompt-injection payload that asks the agent to enumerate 1..N with a
+# unique suffix per call forces one model call per nonce and pins every
+# response in `self.cache` forever. 256 entries is enough to amortise the
+# real repeat-question traffic; the rest gets evicted LRU.
+_CACHE_MAX = 256
 _HEDGE_WORDS = re.compile(
     r"\b(maybe|perhaps|i think|not sure|unsure|possibly|might be|"
     r"probably|guess|honestly not|no idea|cannot determine)\b",
@@ -65,9 +73,17 @@ class DualProcess:
         self.slow_fn = slow_fn
         self.brain = brain
         self.bar = bar
-        self.cache: dict[str, tuple[str, float, bool]] = {}
+        self.cache: OrderedDict[str, tuple[str, float, bool]] = OrderedDict()
         self.stats = {"system1": 0, "system2": 0, "cache_hits": 0,
                       "escalations": 0}
+
+    def _cache_put(self, key: str, value: tuple[str, float, bool]) -> None:
+        """Insert/update with LRU semantics and a hard cap. Prevents the
+        cache from growing without bound (DoS via unique-questions loop)."""
+        self.cache[key] = value
+        self.cache.move_to_end(key)
+        while len(self.cache) > _CACHE_MAX:
+            self.cache.popitem(last=False)
 
     # -- metacognition ------------------------------------------------------
 
@@ -128,7 +144,7 @@ class DualProcess:
         conf = self._confidence(question, fast, None)
         if conf >= self.bar:
             self.stats["system1"] += 1
-            self.cache[key] = (fast, time.time(), False)
+            self._cache_put(key, (fast, time.time(), False))
             self.log.append("dual.route",
                             {"system": 1, "cached": False,
                              "confidence": round(conf, 3)})
@@ -150,7 +166,7 @@ class DualProcess:
                                          _COMPLEXITY.findall(
                                              question))}})
         slow = self.slow_fn(question)
-        self.cache[key] = (slow, time.time(), True)
+        self._cache_put(key, (slow, time.time(), True))
         return RouteDecision2(2, slow, max(conf, 0.8),
                               "escalated: fast confidence "
                               f"{conf:.2f} < bar {self.bar:.2f}",

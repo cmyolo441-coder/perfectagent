@@ -15,10 +15,14 @@ are navigated with ↑↓, PgUp/PgDn, Tab, Home/End.
 
 from __future__ import annotations
 
+import difflib
+import os
 import shutil
+import re
 import sys
 import threading
 import time
+from html import escape as html_escape
 from pathlib import Path
 from typing import Callable
 
@@ -238,12 +242,11 @@ SLASH_COMMANDS = [
     ("/rewind", "rewind timeline + files to a seq — /rewind <seq>"),
     ("/revert", "revert FILES only to a seq (agent keeps memory)"),
     ("/fork", "fork the timeline into a new branch — /fork [name]"),
-    ("/verify", "verify the event log's Merkle spine"),
     ("/why", "causal chain for an event — /why <seq>"),
     ("/impact", "code impact analysis — /impact <symbol> [path]"),
     ("/forge", "environment digest + drift — /forge [probe|drift]"),
     ("/oracle", "post-run analysis, calibration, facts"),
-    ("/budget [steps N|usd X|reset]", "budget governor status/extend"),
+    ("/budget", "budget governor status/extend — /budget steps N|usd X|reset"),
     ("/constitution", "standing rules — /constitution [show|edit]"),
     ("/replay", "replay the session log as a film (text)"),
     ("/memory", "recent episodes + dead-end ledger"),
@@ -266,7 +269,7 @@ SLASH_COMMANDS = [
     ("/ci", "CI pilot — /ci start|stop|status"),
     ("/tune", "auto-tune knobs (TPE) — /tune [trials]"),
     ("/dual", "system 1/2 routing — /dual <q>|stats"),
-    ("/impact", "predict change impact — /impact <path>"),
+    ("/predict", "predict change impact — /predict <path>"),
     ("/race", "racing strategy universes — /race <task>"),
     ("/vitals", "homeostasis check + self-repair"),
     ("/attention", "last context token auction"),
@@ -360,6 +363,111 @@ class SlashCompleter(Completer):
 
 
 # ---------------------------------------------------------------------------
+# Live-write tracker — true live file writing
+# ---------------------------------------------------------------------------
+
+
+class _LiveWrite:
+    """Incrementally pulls the growing `content` string out of a streaming
+    write_file tool-call's JSON arguments, so the file can be shown being
+    written line-by-line WHILE the model generates it (a true live write,
+    not a post-hoc replay).
+
+    Robust by design: if the JSON is shaped unexpectedly, `feed` simply
+    returns no lines and the caller falls back to the normal cascade.
+    Nothing here can break the turn."""
+
+    _CONTENT_KEY = re.compile(r'"content"\s*:\s*"')
+    _PATH_KEY = re.compile(r'"path"\s*:\s*"')
+
+    def __init__(self):
+        self.buf = ""            # accumulated argument JSON so far
+        self.content_start = -1  # index into buf of first content char
+        self.raw_pos = 0         # content raw chars already consumed
+        self.pending = ""        # unescaped text not yet emitted as lines
+        self.lines = 0           # full lines emitted so far
+        self.done = False        # saw the closing quote of the content
+
+    def path(self) -> str | None:
+        m = self._PATH_KEY.search(self.buf)
+        if not m:
+            return None
+        val, _, done = self._unescape(self.buf[m.end():])
+        if not done:
+            return None  # path value still streaming — wait for closing quote
+        return val or None
+
+    def feed(self, chunk: str) -> list:
+        """Feed a new argument chunk; returns the complete content lines that
+        became available as a result."""
+        self.buf += chunk
+        if self.done:
+            return []  # content fully captured; ignore the rest of the JSON
+        if self.content_start < 0:
+            m = self._CONTENT_KEY.search(self.buf)
+            if not m:
+                return []
+            self.content_start = m.end()
+        raw = self.buf[self.content_start:]
+        text, consumed, done = self._unescape(raw[self.raw_pos:])
+        self.raw_pos += consumed
+        self.done = done
+        self.pending += text
+        out = []
+        while "\n" in self.pending:
+            line, self.pending = self.pending.split("\n", 1)
+            self.lines += 1
+            out.append(line)
+        return out
+
+    def flush(self) -> str | None:
+        """Return the final partial line (if any) once generation ends."""
+        if self.pending:
+            line, self.pending = self.pending, ""
+            self.lines += 1
+            return line
+        return None
+
+    @staticmethod
+    def _unescape(s: str) -> tuple:
+        """Unescape a JSON string fragment. Returns (text, consumed, done).
+        Stops before a trailing incomplete escape; `done` is True when the
+        unescaped closing quote of the value was reached."""
+        out = []
+        i = 0
+        n = len(s)
+        done = False
+        while i < n:
+            c = s[i]
+            if c == '"':
+                done = True
+                i += 1
+                break
+            if c != '\\':
+                out.append(c)
+                i += 1
+                continue
+            if i + 1 >= n:
+                break  # trailing backslash — wait for the next chunk
+            e = s[i + 1]
+            if e == 'u':
+                if i + 6 > n:
+                    break  # incomplete \\uXXXX — wait for more
+                hexs = s[i + 2:i + 6]
+                try:
+                    out.append(chr(int(hexs, 16)))
+                except ValueError:
+                    out.append('\\u' + hexs)
+                i += 6
+            else:
+                mapping = {'n': '\n', 't': '\t', 'r': '\r', 'b': '\b',
+                           'f': '\f', '"': '"', '\\': '\\', '/': '/'}
+                out.append(mapping.get(e, '\\' + e))
+                i += 2
+        return ''.join(out), i, done
+
+
+# ---------------------------------------------------------------------------
 # Overlay list (model / effort / help / history pickers)
 # ---------------------------------------------------------------------------
 
@@ -389,6 +497,8 @@ class OverlayList:
         self.visible = False
 
     def move(self, delta: int) -> None:
+        if not self.items:
+            return  # empty list — no-op instead of ZeroDivisionError
         self.index = (self.index + delta) % len(self.items)
         if self.index < self._top:
             self._top = self.index
@@ -605,13 +715,13 @@ class UI:
 
         if self._busy:
             frame = SPINNER_FRAMES[self._spinner_i]
-            max_status = max(0, inner - len(" ⠹  ·  Ctrl+C cancel ") - 4)
+            max_status = max(0, inner - len(" ⠹  ·  Esc/Ctrl+C cancel ") - 4)
             status = self._status_text[:max_status]
-            bar = f" {frame} {status}  ·  Ctrl+C cancel "
+            bar = f" {frame} {status}  ·  Esc/Ctrl+C cancel "
             return [("class:box", "╰"),
                     ("class:box.spinner", f" {frame} "),
                     ("class:box.status", status),
-                    ("class:box.hint", "  ·  Ctrl+C cancel "),
+                    ("class:box.hint", "  ·  Esc/Ctrl+C cancel "),
                     ("class:box",
                      "─" * max(0, inner - len(bar)) + "╯")]
 
@@ -752,6 +862,9 @@ class UI:
         ov = Condition(self._overlay_open)
         approving = Condition(self._approving)
         idle = ~approving  # normal input only when not at the approve bar
+        # submitting a new turn while one is already running would spawn
+        # concurrent agent.run_turn threads over the same message list
+        can_submit = focused & ~ov & idle & Condition(lambda: not self._busy)
 
         # --- approval bar: y / n / a ---
         # register the catch-all FIRST so it has the lowest priority; the
@@ -832,7 +945,7 @@ class UI:
             self.buffer.complete_previous(5)
 
         # --- input ---
-        @kb.add(Keys.Enter, filter=focused & ~ov & idle)
+        @kb.add(Keys.Enter, filter=can_submit)
         def _enter(event):
             b = self.buffer
             if b.complete_state is not None:
@@ -869,6 +982,19 @@ class UI:
             else:
                 self._set_flash("type /exit or Ctrl+D to quit", C["dim"])
 
+        # single Esc while a turn is running = interrupt, exactly like
+        # Ctrl+C (Esc+Enter stays the multi-line newline binding above)
+        @kb.add(Keys.Escape, filter=focused & ~ov &
+                Condition(lambda: self._busy))
+        def _esc_cancel(event):
+            self._cancel_flag.set()
+            self._set_status("cancelling…")
+
+        # Esc at the approve bar = "no", same as Ctrl+C there
+        @kb.add(Keys.Escape, filter=approving)
+        def _esc_deny(event):
+            self._answer_approve("n")
+
         @kb.add("c-d", filter=focused & ~ov & idle &
                 Condition(self._buffer_empty))
         def _ctrl_d(event):
@@ -897,11 +1023,27 @@ class UI:
 
         return kb
 
+    def _bg(self, fn) -> None:
+        """Run fn on a daemon thread with exceptions surfaced to the UI —
+        a bare thread's default excepthook prints to stderr, invisible
+        under patch_stdout, so failures would look like silent no-ops."""
+        def guarded():
+            try:
+                fn()
+            except Exception as e:  # noqa: BLE001 — report, never crash
+                self.print_error(f"{type(e).__name__}: {e}")
+        threading.Thread(target=guarded, daemon=True).start()
+
     # -- dispatch: slash commands + turns ----------------------------------------------------
 
     def _dispatch(self, text: str) -> None:
         if text.startswith("/"):
             self._handle_slash(text)
+            return
+        if self._busy:
+            # a turn is already running — never overlap two agent loops
+            self._set_flash("busy — wait for the current turn (Ctrl+C to "
+                            "cancel)", C["yellow"])
             return
         self._emit_user(text)
         threading.Thread(target=self._run_turn_thread, args=(text,),
@@ -911,7 +1053,15 @@ class UI:
         parts = text.strip().split(None, 1)
         cmd = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
+        # one typo or a transient OSError inside a command must never
+        # unwind through prompt_toolkit and kill the whole session —
+        # same policy as the guarded turn thread below
+        try:
+            self._route_slash(cmd, arg)
+        except Exception as e:  # noqa: BLE001 — the UI must survive
+            self.print_error(f"{type(e).__name__}: {e}")
 
+    def _route_slash(self, cmd: str, arg: str) -> None:
         if cmd in ("/exit", "/quit", "/q"):
             self.print_info(f"bye — session {self.agent.session_id} saved",
                             C["dim"])
@@ -1004,10 +1154,6 @@ class UI:
             self._cmd_revert(arg)
         elif cmd == "/fork":
             self._cmd_fork(arg)
-        elif cmd == "/verify":
-            ok, msg = self.agent.log.verify()
-            self.print_info(f"{'✓' if ok else '✗'} {msg}",
-                            C["green"] if ok else C["red"])
         elif cmd == "/why":
             self._cmd_why(arg)
         elif cmd == "/impact":
@@ -1062,8 +1208,8 @@ class UI:
             self._cmd_tune(arg)
         elif cmd == "/dual":
             self._cmd_dual(arg)
-        elif cmd == "/impact":
-            self._cmd_impact(arg)
+        elif cmd == "/predict":
+            self._cmd_predict_impact(arg)
         elif cmd == "/race":
             self._cmd_race(arg)
         elif cmd == "/vitals":
@@ -1191,6 +1337,10 @@ class UI:
                 "  ! prefix = anti-clause, ~ prefix = invariant")
             return
         pieces = [p.strip() for p in rest.split("|") if p.strip()]
+        if not pieces:
+            self.print_error("goal needs a statement: "
+                             "/goal set <statement> | <clause> @ <type>:<arg>")
+            return
         statement = pieces[0]
         clauses: list[dict] = []
         anti: list[dict] = []
@@ -1567,7 +1717,7 @@ class UI:
             self.console.print(Text(self.agent.nexus.format_impact(symbol),
                                     style=C["fg"]))
 
-        threading.Thread(target=run, daemon=True).start()
+        self._bg(run)
 
     def _cmd_forge(self, arg: str) -> None:
         sub = arg.strip().lower()
@@ -1728,7 +1878,7 @@ class UI:
                 self.print_info(f"  evidence: {verdict.evidence[:200]}",
                                 C["dim"])
 
-        threading.Thread(target=run, daemon=True).start()
+        self._bg(run)
 
     # -- v5 advanced subsystem commands ----------------------------------
 
@@ -1755,7 +1905,7 @@ class UI:
                 f"{result['blocked']} blocked · {result['error']} error",
                 C["green"] if result["error"] == 0 else C["yellow"])
 
-        threading.Thread(target=run, daemon=True).start()
+        self._bg(run)
 
     def _cmd_evolve(self, arg: str) -> None:
         """Evolution Engine: mutate → evaluate → deploy one role brief."""
@@ -1776,7 +1926,7 @@ class UI:
             color = C["green"] if gen.deployed else C["yellow"]
             self.print_info(self.agent.evolution.format(gen), color)
 
-        threading.Thread(target=run, daemon=True).start()
+        self._bg(run)
 
     def _cmd_brain(self, arg: str) -> None:
         """Cognitive memory: query it, put it to sleep, or read stats."""
@@ -1880,7 +2030,7 @@ class UI:
             self.console.print(Text(self.agent.debate.format(result),
                                     style=C["fg"]))
 
-        threading.Thread(target=run, daemon=True).start()
+        self._bg(run)
 
     def _cmd_market(self, arg: str) -> None:
         """Task market: auctions the given tasks to bidding specialists."""
@@ -1896,7 +2046,7 @@ class UI:
             self.console.print(Text(self.agent.market.format(contracts),
                                     style=C["fg"]))
 
-        threading.Thread(target=run, daemon=True).start()
+        self._bg(run)
 
     def _cmd_tower(self, arg: str) -> None:
         """Web Control Tower: mission-control dashboard in the browser."""
@@ -1945,7 +2095,7 @@ class UI:
                                 for v in r.violations])
             self.print_info(body, color)
 
-        threading.Thread(target=run, daemon=True).start()
+        self._bg(run)
 
     def _cmd_mcts(self, arg: str) -> None:
         goal = arg.strip()
@@ -1968,13 +2118,22 @@ class UI:
     def _cmd_causal(self, arg: str) -> None:
         sub = arg.strip().lower()
         if sub.startswith("do "):
-            parts = arg.strip().split(None, 2)
-            report = self.agent.causal.do(parts[1], "off" not in sub)
+            toks = arg.strip().split()
+            # trailing "on"/"off" token is the switch — never a substring
+            # match (a feature literally named "soft_off" must work)
+            if toks[-1] in ("on", "off") and len(toks) > 2:
+                enable = toks[-1] == "on"
+                cause = " ".join(toks[1:-1])
+            else:
+                enable = True
+                cause = " ".join(toks[1:])
+            report = self.agent.causal.do(cause, enable)
+            verdict = ("trustworthy" if report["trustworthy"]
+                       else "NOT ENOUGH DATA")
             self.print_info(
-                f"do({parts[1]}) → outcome change "
+                f"do({cause}) → outcome change "
                 f"{report['estimated_outcome_change']:+.3f} "
-                f"({'trustworthy' if report['trustworthy'] else
-                    'NOT ENOUGH DATA'})", C["cyan"])
+                f"({verdict})", C["cyan"])
             return
         edges = self.agent.causal.discover()
         self.print_info(self.agent.causal.format(edges), C["cyan"])
@@ -1991,13 +2150,26 @@ class UI:
         ag = self.agent
         parts = arg.split()
         if not parts or parts[0].lower() == "serve":
-            port = ag.mesh.serve(int(parts[1]) if len(parts) > 1 else 0)
+            port_arg = parts[1] if len(parts) > 1 else "0"
+            try:
+                want = int(port_arg)
+            except ValueError:
+                self.print_error(f"bad port: {port_arg!r} — usage: /mesh "
+                                 f"serve [port]")
+                return
+            port = ag.mesh.serve(want)
             self.print_info(f"📡 mesh node '{ag.mesh.node_id}' serving "
                             f"on port {port}", C["green"])
             return
         if parts[0].lower() == "discover" and len(parts) > 1:
             host, _, port = parts[1].partition(":")
-            peer = ag.mesh.discover(host, int(port or 7861))
+            try:
+                port_num = int(port or 7861)
+            except ValueError:
+                self.print_error(f"bad port: {port!r} — usage: /mesh "
+                                 f"discover host:port")
+                return
+            peer = ag.mesh.discover(host, port_num)
             if peer:
                 self.print_info(f"discovered peer {peer.capabilities}",
                                 C["green"])
@@ -2028,7 +2200,7 @@ class UI:
             self.print_info(msg, C["green"] if status == "sealed"
                             else C["yellow"])
 
-        threading.Thread(target=run, daemon=True).start()
+        self._bg(run)
 
     def _cmd_synth(self, arg: str) -> None:
         """Synthesize a tool from a JSON spec: name, description,
@@ -2098,12 +2270,12 @@ class UI:
                             f" · {r.elapsed_ms}ms]\n{r.answer}",
                             C["cyan"])
 
-        threading.Thread(target=run, daemon=True).start()
+        self._bg(run)
 
-    def _cmd_impact(self, arg: str) -> None:
+    def _cmd_predict_impact(self, arg: str) -> None:
         path = arg.strip()
         if not path:
-            self.print_error("usage: /impact <file path>")
+            self.print_error("usage: /predict <file path>")
             return
         impact = self.agent.world.predict_impact(path)
         self.print_info(impact.format(), C["cyan"])
@@ -2119,7 +2291,7 @@ class UI:
             self.print_info(self.agent.racer.format(result),
                             C["green"] if result.winner else C["yellow"])
 
-        threading.Thread(target=run, daemon=True).start()
+        self._bg(run)
 
     def _cmd_fabric(self, arg: str) -> None:
         """Bitemporal knowledge graph: ask, assert, or see history."""
@@ -2231,6 +2403,10 @@ class UI:
                                  "task1 | task2 | …")
                 return
             segs = [s.strip() for s in rest.split("|") if s.strip()]
+            if not segs:
+                self.print_error("usage: /mission start <statement> | "
+                                 "task1 | task2 | …")
+                return
             statement = segs[0]
             tasks = segs[1:] if len(segs) > 1 else [statement]
             m = d.start(statement, tasks)
@@ -2509,8 +2685,10 @@ class UI:
         self._preview_pending = False
         streamed = {"n": 0}
         # SPEED: single tail string — appending a token is O(1), never a
-        # re-join of the whole stream (that was quadratic on long replies)
-        stream_tail = {"t": ""}
+        # re-join of the whole stream (that was quadratic on long replies).
+        # "blank" tracks blank-line runs so the model's "\n\n\n" spam
+        # between tool calls collapses to a single blank line.
+        stream_tail = {"t": "", "blank": False}
         render_md = bool(self.cfg.extra.get("render_markdown", False))
         md_buf: list[str] = []
         md_len = {"n": 0}
@@ -2550,7 +2728,19 @@ class UI:
             tail = stream_tail["t"] + piece
             if "\n" in tail:
                 before, _, rem = tail.rpartition("\n")
-                self.console.print(Text(before), soft_wrap=True)
+                # collapse blank-line runs (the model loves "\n\n\n" between
+                # tool calls) — keep at most one blank in a row
+                out: list[str] = []
+                for ln in before.split("\n"):
+                    if not ln.strip():
+                        if stream_tail["blank"]:
+                            continue
+                        stream_tail["blank"] = True
+                    else:
+                        stream_tail["blank"] = False
+                    out.append(ln)
+                if out:
+                    self.console.print(Text("\n".join(out)), soft_wrap=True)
                 tail = rem
             stream_tail["t"] = tail
             maxw = self._width() - 26
@@ -2562,20 +2752,144 @@ class UI:
         def on_reasoning(piece: str):
             self._set_status("reasoning…")
 
+        # live shell streaming state — one tool runs at a time, so a plain
+        # dict is enough: on_tool_call arms it, on_tool_output streams the
+        # lines, on_tool_update closes the block with the exit-code footer
+        shell_live = {"active": False, "streamed": False, "lines": 0}
+
+        def on_tool_output(line: str, stream: str):
+            if not shell_live["active"]:
+                return
+            n = shell_live["lines"]
+            if n == 500:
+                # flood guard — the full output stays in the tool result
+                self.console.print(Text(
+                    " │ … live view truncated (full output kept in the "
+                    "tool result)", style=C["dim"]), soft_wrap=True)
+                shell_live["lines"] = n + 1
+                return
+            if n > 500:
+                return
+            shell_live["lines"] = n + 1
+            shell_live["streamed"] = True
+            style = C["orange"] if stream == "err" else C["fg"]
+            self.console.print(Text(" │ " + line, style=style),
+                               soft_wrap=True)
+
+        # live write_file streaming — the file is shown being written WHILE
+        # the model generates its content (true live write, not a replay).
+        # on_tool_args feeds the growing JSON; the tracker extracts the
+        # `content` lines; on_tool_update closes the block.
+        live_w = {"tracker": None, "header": False, "count": 0,
+                  "held": [], "path": ""}
+
+        def _lw_emit(ln: str):
+            live_w["count"] += 1
+            t = Text()
+            t.append(" │ ", style=C["dim"])
+            t.append(f"{live_w['count']:>4} ", style=C["dim"])
+            t.append("+  ", style=C["green"])
+            t.append(ln, style=C["fg"])
+            self.console.print(t, soft_wrap=True)
+
+        def on_tool_args(name: str, chunk: str):
+            if name != "write_file":
+                return
+            if not self.cfg.extra.get("live_stream_edits", True):
+                return  # animations disabled — fall back to instant render
+            if live_w["tracker"] is None:
+                live_w["tracker"] = _LiveWrite()
+            tr = live_w["tracker"]
+            try:
+                new_lines = tr.feed(chunk)
+            except Exception:  # noqa: BLE001 — never break the turn
+                return
+            if not live_w["header"]:
+                p = tr.path()
+                if p:
+                    live_w["path"] = p
+                    t = Text()
+                    t.append(" ⏺ ", style=f"bold {C['accent']}")
+                    t.append(f"Wrote {self._rel_path(p)}",
+                             style=f"bold {C['fg']}")
+                    self.console.print(t, soft_wrap=True)
+                    live_w["header"] = True
+                    for held in live_w["held"]:
+                        _lw_emit(held)
+                    live_w["held"] = []
+            if live_w["header"]:
+                for ln in new_lines:
+                    _lw_emit(ln)
+                if new_lines:
+                    self._set_status(f"writing "
+                                     f"{self._rel_path(live_w['path'])} · "
+                                     f"{live_w['count']} lines…")
+            else:
+                live_w["held"].extend(new_lines)
+
         def on_tool_call(ev: ToolEvent):
             rem = stream_tail["t"].strip("\n")
             stream_tail["t"] = ""
+            stream_tail["blank"] = False
             if rem:
                 self.console.print(Text(rem), soft_wrap=True)
-            self.console.print(self._tool_call_line(ev))
+            shell_live["active"] = ev.name in ("run_command", "live_shell")
+            shell_live["streamed"] = False
+            shell_live["lines"] = 0
+            if ev.name != "write_file":
+                # a non-write tool starting clears any stale live-write state
+                live_w["tracker"] = None
+                live_w["header"] = False
+                live_w["count"] = 0
+                live_w["held"] = []
+            if ev.name in ("run_command", "live_shell", "apply_patch",
+                           "write_file", "edit_file", "read_file"):
+                # live-action block header instead of the generic gear line.
+                # For write_file, skip the header if it was already printed
+                # during live streaming.
+                if ev.name == "write_file" and live_w["header"]:
+                    pass
+                else:
+                    self.console.print(self._live_block(ev))
+            else:
+                self.console.print(self._tool_call_line(ev))
             self._set_status(f"running {ev.name}…")
 
         def on_tool_update(ev: ToolEvent):
             if ev.name == "wait_for_agents" and ev.status == "done":
                 # subagent reports deserve a real panel, not one line
                 self.console.print(self._subagent_panel(ev))
+            elif ev.name == "write_file" and ev.status in ("done", "error") \
+                    and live_w["count"] > 0:
+                # content already streamed live — flush the last partial
+                # line and close the block; no replay cascade
+                tr = live_w["tracker"]
+                if tr is not None:
+                    last = tr.flush()
+                    if last is not None:
+                        _lw_emit(last)
+                self.console.print(self._write_footer(ev, live_w["count"]))
+            elif ev.name in ("write_file", "edit_file", "apply_patch") \
+                    and ev.status in ("done", "error"):
+                # live-write animation — the file changes cascade down the
+                # terminal line by line, like model tokens streaming
+                self._stream_live_block(ev)
+            elif ev.name in ("run_command", "live_shell") \
+                    and ev.status in ("done", "error"):
+                if shell_live["streamed"]:
+                    # output already streamed live — just close the block
+                    self.console.print(self._shell_footer(ev))
+                else:
+                    self.console.print(self._live_block(ev))
+            elif ev.name == "read_file" and ev.status in ("done", "error"):
+                self.console.print(self._live_block(ev))
             else:
                 self.console.print(self._tool_result_line(ev))
+            shell_live["active"] = False
+            live_w["tracker"] = None
+            live_w["header"] = False
+            live_w["count"] = 0
+            live_w["held"] = []
             self._set_status("thinking…")
 
         def on_status(s: str):
@@ -2600,7 +2914,8 @@ class UI:
                 text, on_token, on_reasoning, on_tool_call, on_tool_update,
                 on_status, self._approve_blocking,
                 should_cancel=self._cancel_flag.is_set,
-                on_route=on_route)
+                on_route=on_route, on_tool_output=on_tool_output,
+                on_tool_args=on_tool_args)
         except Exception as e:  # noqa: BLE001 — never kill the UI thread
             self.print_error(f"{type(e).__name__}: {e}")
         finally:
@@ -2668,10 +2983,15 @@ class UI:
         self.console.print(t)
 
     def _start_spinner(self) -> None:
+        # generation token: back-to-back turns used to leak tick threads
+        # (old thread wakes from sleep after the flag flips and keeps
+        # looping) — a stale generation exits instead
+        self._spinner_gen = getattr(self, "_spinner_gen", 0) + 1
+        gen = self._spinner_gen
         self._spinner_on = True
 
         def tick():
-            while self._spinner_on:
+            while self._spinner_on and gen == self._spinner_gen:
                 self._spinner_i = (self._spinner_i + 1) % len(SPINNER_FRAMES)
                 self._invalidate()
                 time.sleep(0.09)
@@ -2679,6 +2999,7 @@ class UI:
         threading.Thread(target=tick, daemon=True).start()
 
     def _stop_spinner(self) -> None:
+        self._spinner_gen = getattr(self, "_spinner_gen", 0) + 1
         self._spinner_on = False
 
     # -- approval (in-app) ------------------------------------------------------------------------
@@ -2850,8 +3171,12 @@ class UI:
             return
         items = []
         for t in turns[-15:]:
-            preview = t.user_text.replace("\n", " ")[:70]
-            html = (f'<style color="{C["dim"]}">{t.timestamp}</style> '
+            # prompt_toolkit parses HTML() with an XML parser — raw user
+            # text containing '&' or '<' would crash the RENDER loop and
+            # kill the whole session; escape everything user-controlled
+            preview = html_escape(t.user_text.replace("\n", " ")[:70])
+            stamp = html_escape(str(t.timestamp))
+            html = (f'<style color="{C["dim"]}">{stamp}</style> '
                     f'<style color="{C["fg"]}">{preview}</style>')
             items.append((html, ""))
         self.overlay = OverlayList("HISTORY (recent turns)", items,
@@ -2929,45 +3254,427 @@ class UI:
         t.append(text, style=f"bold {C['fg']}")
         self.console.print(t)
 
+    # Devin-style titles + bodies for every tool that is not a live-action
+    # block (glob / search / list / web / file-ops). One ⏺ header on call,
+    # one │/└ body on result — no ⚙ gear lines, no ✓ lines.
+    _DEVIN_VERB = {
+        "glob_files": "Globbed",
+        "search_files": "Searched",
+        "list_dir": "Listed",
+        "file_info": "Inspected",
+        "create_directory": "Created directory",
+        "copy_path": "Copied",
+        "move_path": "Moved",
+        "delete_path": "Deleted",
+        "web_fetch": "Fetched",
+        "web_search": "Searched the web",
+        "live_shell_reset": "Reset the shell session",
+    }
+    _DEVIN_ARG = {
+        "glob_files": "pattern", "search_files": "pattern",
+        "list_dir": "path", "file_info": "path",
+        "create_directory": "path", "delete_path": "path",
+        "copy_path": "src", "move_path": "src",
+        "web_fetch": "url", "web_search": "query",
+    }
+    _DEVIN_PATH_ARG = {"list_dir", "file_info", "create_directory",
+                       "delete_path", "copy_path", "move_path"}
+
+    def _devin_title(self, ev: ToolEvent) -> str:
+        verb = self._DEVIN_VERB.get(ev.name,
+                                    ev.name.replace("_", " ").strip())
+        key = self._DEVIN_ARG.get(ev.name)
+        arg = ""
+        if key and ev.args.get(key) is not None:
+            raw = str(ev.args[key])
+            arg = self._rel_path(raw) if ev.name in self._DEVIN_PATH_ARG \
+                else raw
+            if len(arg) > 60:
+                arg = arg[:57] + "…"
+        if ev.name in ("copy_path", "move_path"):
+            dst = str(ev.args.get("dst", ""))
+            arg = f"{arg} → {dst}" if arg else dst
+        return f"{verb} {arg}".strip()
+
     def _tool_call_line(self, ev: ToolEvent) -> Text:
-        shown = {}
-        for k, v in ev.args.items():
-            s = str(v)
-            shown[k] = s if len(s) <= 80 else s[:77] + "…"
-        arg_str = "  ".join(f"{k}={v!r}" for k, v in shown.items())
-        if len(arg_str) > 120:
-            arg_str = arg_str[:117] + "…"
         t = Text()
-        t.append("  ⚙ ", style=C["orange"])
-        t.append(ev.name, style=f"bold {C['orange']}")
-        if arg_str:
-            t.append(f"  {arg_str}", style=C["dim"])
+        t.append(" ⏺ ", style=f"bold {C['accent']}")
+        t.append(self._devin_title(ev), style=f"bold {C['fg']}")
         return t
 
+    def _generic_rows(self, ev: ToolEvent) -> list:
+        """Body rows for a finished non-live tool (same segment format as
+        _live_rows). Always returns at least one row (the └ footer)."""
+        name = ev.name
+        res = (ev.result or "").rstrip()
+        if ev.status != "done" or res.startswith("ERROR"):
+            msg = res.splitlines()[0] if res else ev.status
+            return [[(msg[:200], C["red"])]]
+        lines = res.splitlines()
+
+        def capped(items, cap):
+            rows = [[(it, C["fg"])] for it in items[:cap]]
+            if len(items) > cap:
+                rows.append([(f"… +{len(items) - cap} more", C["dim"])])
+            return rows
+
+        if name == "glob_files":
+            if res.strip() == "no matches":
+                return [[("no matches", C["dim"])]]
+            files = [l for l in lines if l.strip()]
+            rows = capped([self._rel_path(f) for f in files], 5)
+            rows.append([(f"{len(files)} file(s)", C["green"])])
+            return rows
+        if name == "search_files":
+            if res.strip() == "no matches":
+                return [[("no matches", C["dim"])]]
+            hits = [l for l in lines if l.strip()]
+            rows = capped([h[:160] for h in hits], 5)
+            rows.append([(f"{len(hits)} match(es)", C["green"])])
+            return rows
+        if name == "list_dir":
+            entries = [l.strip() for l in lines[1:] if l.strip()]
+            if not entries:
+                return [[("(empty)", C["dim"])]]
+            rows = capped(entries, 8)
+            rows.append([(f"{len(entries)} entr"
+                          f"{'y' if len(entries) == 1 else 'ies'}",
+                          C["green"])])
+            return rows
+        if name == "web_search":
+            n = len(re.findall(r"(?m)^\d+\.", res))
+            body = [l for l in lines if l.strip()
+                    and not l.startswith("web search:")]
+            rows = capped([l[:160] for l in body], 6)
+            rows.append([(f"{n} result(s)", C["green"])])
+            return rows
+        if name == "web_fetch":
+            return [[(f"{len(res)} characters fetched", C["green"])]]
+        if name in ("create_directory", "copy_path", "move_path",
+                    "delete_path"):
+            return [[("done", C["green"])]]
+        if name == "file_info":
+            rows = [[(l.strip()[:160], C["fg"])] for l in lines if l.strip()]
+            return rows or [[("done", C["green"])]]
+        first = lines[0] if lines else "done"
+        return [[(first[:200], C["green"])]]
+
     def _tool_result_line(self, ev: ToolEvent) -> Text:
-        icon = {"done": "✓", "error": "✗", "denied": "⊘",
-                "blocked": "⛔"}.get(ev.status, "·")
-        color = {"done": C["green"], "error": C["red"],
-                 "denied": C["yellow"], "blocked": C["red"]}.get(
-                     ev.status, C["dim"])
-        first_line = ev.result.splitlines()[0] if ev.result else ""
-        if len(first_line) > 100:
-            first_line = first_line[:97] + "…"
+        rows = self._generic_rows(ev)
         t = Text()
-        t.append(f"  {icon} ", style=color)
-        t.append(first_line, style=C["dim"])
-        t.append(f"  ({ev.duration:.1f}s)", style=C["dim"])
-        if ev.status == "error":
-            # root-cause hint from the healer taxonomy — instant triage
-            try:
-                from .healer import classify
-                diag = classify(ev.result)
-                if diag.root_cause not in ("unknown", ""):
-                    t.append(f"  ↳ {diag.root_cause}: "
-                             f"{diag.suggestion[:70]}",
-                             style=C["orange"])
-            except Exception:
-                pass
+        n = len(rows)
+        for idx, row in enumerate(rows):
+            t.append(" └ " if idx == n - 1 else " │ ", style=C["dim"])
+            for seg, style in row:
+                t.append(seg, style=style)
+            if idx < n - 1:
+                t.append("\n")
+        return t
+
+    # ------------------------------------------------------------------
+    # Live-action blocks, Devin-CLI style:
+    #
+    #  ⏺ Ran command               ⏺ Wrote ./webhack/example.md
+    #  │ $ ls -la                  │  1 +  # AI ke baare mein
+    #  │ total 40                  │  2 +  ## Kya hai AI?
+    #  └ Exited with code 0        └ …
+    #
+    #  ⏺ Read ./file.md            ⏺ Edited ./file.md
+    #  └ 57 lines                  │ 24    ## AI ke applications
+    #                              │ 26 -  - **Healthcare**: diagnosis
+    #                              │ 26 +  - **Healthcare**: diagnosis, imaging
+    #                              └ 33 +  - **Cybersecurity**: threats
+    # ------------------------------------------------------------------
+
+    def _rel_path(self, path: str) -> str:
+        """Devin-style path display: relative to cwd with a ./ prefix."""
+        if not path:
+            return ""
+        try:
+            rel = os.path.relpath(str(path))
+        except ValueError:
+            return str(path)
+        if rel.startswith(".."):
+            return str(path)
+        return rel if rel.startswith(".") else "./" + rel
+
+    @staticmethod
+    def _parse_shell_result(result: str) -> tuple:
+        """Split a run_command/live_shell receipt into (exit, stdout, stderr)."""
+        exit_code = None
+        m = re.search(r"^exit code: (-?\d+)", result, flags=re.M)
+        if m:
+            exit_code = int(m.group(1))
+        stdout = stderr = ""
+        sm = re.search(
+            r"--- stdout ---\n(.*?)(?:\n--- stderr ---\n(.*))?$",
+            result, flags=re.S)
+        if sm:
+            stdout = (sm.group(1) or "").rstrip("\n")
+            stderr = (sm.group(2) or "").rstrip("\n")
+        else:
+            em = re.search(r"--- stderr ---\n(.*)$", result, flags=re.S)
+            if em:
+                stderr = em.group(1).rstrip("\n")
+            elif exit_code is None:
+                stdout = result.rstrip("\n")
+        return exit_code, stdout, stderr
+
+    @staticmethod
+    def _find_hunk_line(path: str, new: str) -> int:
+        """1-based line number where the edited hunk now sits, so the diff
+        view can show real file line numbers instead of hunk-relative ones."""
+        try:
+            text = Path(path).expanduser().read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return 1
+        if not new:
+            return 1
+        idx = text.find(new)
+        if idx < 0:
+            return 1
+        return text.count("\n", 0, idx) + 1
+
+    @staticmethod
+    def _diff_rows(old: str, new: str, start: int) -> list:
+        """Rows of (line_no, marker, color, text) for the edit diff view.
+        Old-side and new-side numbers both start at the hunk's file line,
+        exactly like Devin's edit blocks."""
+        old_lines = old.splitlines()
+        new_lines = new.splitlines()
+        sm = difflib.SequenceMatcher(None, old_lines, new_lines,
+                                     autojunk=False)
+        rows = []
+        i = j = start
+        changed = False
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == "equal":
+                # context before any change keeps old-file numbers; context
+                # after a change switches to new-file numbers (Devin style)
+                base = j if changed else i
+                for k in range(i1, i2):
+                    rows.append((base + (k - i1), "   ", C["fg"],
+                                 old_lines[k]))
+                i += i2 - i1
+                j += j2 - j1
+            elif tag == "delete":
+                changed = True
+                for k in range(i1, i2):
+                    rows.append((i + (k - i1), "-  ", C["red"], old_lines[k]))
+                i += i2 - i1
+            elif tag == "insert":
+                changed = True
+                for k in range(j1, j2):
+                    rows.append((j + (k - j1), "+  ", C["green"],
+                                 new_lines[k]))
+                j += j2 - j1
+            else:  # replace — removals first, then additions
+                changed = True
+                for k in range(i1, i2):
+                    rows.append((i + (k - i1), "-  ", C["red"], old_lines[k]))
+                i += i2 - i1
+                for k in range(j1, j2):
+                    rows.append((j + (k - j1), "+  ", C["green"],
+                                 new_lines[k]))
+                j += j2 - j1
+        return rows
+
+    def _live_rows(self, ev: ToolEvent, w: int) -> list:
+        """Body rows for a finished live block; each row is a list of
+        (text, style) segments. The caller adds the │ / └ tree glyphs."""
+        rows: list = []
+        failed = ev.status != "done" or ev.result.startswith("ERROR")
+
+        def add(text: str, style: str):
+            rows.append([(text[:w], style)])
+
+        if ev.name in ("run_command", "live_shell"):
+            add(f"$ {ev.args.get('command', '')}", f"bold {C['fg']}")
+            if failed:
+                add(ev.result.strip() or ev.status, C["red"])
+                return rows
+            code, out, err = self._parse_shell_result(ev.result)
+            lines = out.splitlines()
+            for ln in lines[:30]:
+                add(ln if ln else " ", C["fg"])
+            if len(lines) > 30:
+                add(f"… +{len(lines) - 30} more lines", C["dim"])
+            for ln in err.splitlines()[:10]:
+                add(ln, C["orange"])
+            if code is not None:
+                add(f"Exited with code {code}",
+                    C["green"] if code == 0 else C["red"])
+        elif ev.name == "write_file":
+            if failed:
+                add(ev.result.strip() or ev.status, C["red"])
+                return rows
+            content = str(ev.args.get("content", ""))
+            lines = content.splitlines()
+            width = len(str(max(len(lines), 1)))
+            for n, ln in enumerate(lines[:300], 1):
+                rows.append([(f"{n:>{width}} ", C["dim"]),
+                             ("+  ", C["green"]),
+                             (ln[:w], C["fg"])])
+            if len(lines) > 300:
+                add(f"… +{len(lines) - 300} more lines", C["dim"])
+        elif ev.name == "edit_file":
+            if failed:
+                add(ev.result.strip() or ev.status, C["red"])
+                return rows
+            old = str(ev.args.get("old_string", ""))
+            new = str(ev.args.get("new_string", ""))
+            start = self._find_hunk_line(str(ev.args.get("path", "")), new)
+            drows = self._diff_rows(old, new, start)
+            width = len(str(max((r[0] for r in drows), default=1)))
+            for num, mark, color, text in drows[:100]:
+                rows.append([(f"{num:>{width}} ", C["dim"]),
+                             (mark, C["dim"] if mark == "   " else color),
+                             (text[:w], color)])
+            if len(drows) > 100:
+                add(f"… +{len(drows) - 100} more lines", C["dim"])
+        elif ev.name == "read_file":
+            m = re.search(r"(\d+) lines total, showing (\d+)\.\.(\d+)",
+                          ev.result)
+            if m and m.group(2) == "1" and m.group(3) == m.group(1):
+                add(f"{m.group(1)} lines", C["dim"])
+            elif m:
+                add(f"lines {m.group(2)}..{m.group(3)} of {m.group(1)}",
+                    C["dim"])
+            else:
+                add((ev.result.splitlines() or [""])[0], C["dim"])
+        else:  # apply_patch
+            lines = str(ev.args.get("patch", "")).splitlines()
+            for ln in lines[:60]:
+                if ln.startswith("@@"):
+                    add(ln, C["cyan"])
+                elif ln.startswith(("+++ ", "--- ")):
+                    add(ln, f"bold {C['dim']}")
+                elif ln.startswith("+"):
+                    add(ln, C["green"])
+                elif ln.startswith("-"):
+                    add(ln, C["red"])
+                else:
+                    add(ln, C["fg"])
+            if len(lines) > 60:
+                add(f"… +{len(lines) - 60} more lines", C["dim"])
+            if failed:
+                add(ev.result.strip() or ev.status, C["red"])
+        if not rows:
+            add(ev.result.splitlines()[0] if ev.result else ev.status,
+                C["dim"])
+        return rows
+
+    def _live_body_lines(self, ev: ToolEvent) -> list:
+        """The finished body of a live block as one Text per line (tree
+        glyphs included) — printable all at once or streamed line by line."""
+        w = max(20, self._width() - 8)
+        rows = self._live_rows(ev, w)
+        n = len(rows)
+        out = []
+        for idx, row in enumerate(rows):
+            t = Text()
+            t.append(" └ " if idx == n - 1 else " │ ", style=C["dim"])
+            for seg, style in row:
+                t.append(seg, style=style)
+            out.append(t)
+        return out
+
+    def _stream_delay(self, n_lines: int) -> float:
+        """Per-line delay for the live-write animation. Tuned so the cascade
+        is unmistakably 'live': ~24ms/line, the whole block capped at ~3.5s,
+        and even tiny edits get >= ~0.5s so they don't just flash by. A fast
+        ~8ms/line dump reads as an instant append on a scrolling terminal —
+        that's what made writes look non-live before."""
+        if not self.cfg.extra.get("live_stream_edits", True):
+            return 0.0
+        if not self.console.is_terminal:
+            return 0.0  # piped/redirected output — never animate
+        if n_lines <= 0:
+            return 0.0
+        per = min(0.024, 3.5 / n_lines)   # keep the whole block under ~3.5s
+        per = max(per, 0.5 / n_lines)     # keep small blocks >= ~0.5s total
+        return per
+
+    def _stream_live_block(self, ev: ToolEvent) -> None:
+        """Stream a finished write/edit/patch block line by line — the same
+        live feel as model token streaming, but for file changes. Runs on
+        the turn's worker thread, so sleeping between lines never blocks
+        the prompt_toolkit event loop."""
+        lines = self._live_body_lines(ev)
+        n = len(lines)
+        if n == 0:
+            return
+        delay = self._stream_delay(n)
+        rel = self._rel_path(str(ev.args.get("path", "")))
+        verb = {"write_file": "writing", "edit_file": "editing",
+                "apply_patch": "patching"}.get(ev.name, "writing")
+        last_status = 0.0
+        for idx, line in enumerate(lines):
+            if self._cancel_flag.is_set():
+                delay = 0.0  # cancelled — flush the rest instantly
+            self.console.print(line, soft_wrap=True)
+            if delay and idx < n - 1:
+                now = time.time()
+                if now - last_status >= 0.08:
+                    self._set_status(f"{verb} {rel} · "
+                                     f"{idx + 1}/{n} lines…")
+                    last_status = now
+                time.sleep(delay)
+
+    def _live_block(self, ev: ToolEvent) -> Text:
+        """Devin-CLI style live-action block (see banner above). The header
+        is printed when the tool starts; the │/└ body when it finishes."""
+        rel = self._rel_path(str(ev.args.get("path", "")))
+        t = Text()
+        if ev.status == "running" or not ev.result:
+            t.append(" ⏺ ", style=f"bold {C['accent']}")
+            if ev.name in ("run_command", "live_shell"):
+                t.append("Ran command", style=f"bold {C['fg']}")
+            elif ev.name == "write_file":
+                t.append(f"Wrote {rel}", style=f"bold {C['fg']}")
+            elif ev.name == "edit_file":
+                t.append(f"Edited {rel}", style=f"bold {C['fg']}")
+            elif ev.name == "read_file":
+                t.append(f"Read {rel}", style=f"bold {C['fg']}")
+            else:
+                t.append("Applied patch", style=f"bold {C['fg']}")
+            return t
+        body = self._live_body_lines(ev)
+        for idx, line in enumerate(body):
+            t.append_text(line)
+            if idx < len(body) - 1:
+                t.append("\n")
+        return t
+
+    def _shell_footer(self, ev: ToolEvent) -> Text:
+        """Closing line of a live-streamed shell block: the exit code (or
+        the error), printed once the command finishes."""
+        t = Text()
+        t.append(" └ ", style=C["dim"])
+        if ev.status != "done" or ev.result.startswith("ERROR"):
+            msg = ev.result.splitlines()[0] if ev.result else ev.status
+            t.append(msg[:200], style=C["red"])
+            return t
+        code, _, _ = self._parse_shell_result(ev.result)
+        if code is not None:
+            t.append(f"Exited with code {code}",
+                     style=C["green"] if code == 0 else C["red"])
+        else:
+            t.append("done", style=C["green"])
+        return t
+
+    def _write_footer(self, ev: ToolEvent, nlines: int) -> Text:
+        """Closing line of a live-streamed write block: the tool's receipt
+        (e.g. 'OK: created … 286 line(s)'), printed once writing finishes."""
+        t = Text()
+        t.append(" └ ", style=C["dim"])
+        if ev.status != "done" or ev.result.startswith("ERROR"):
+            msg = ev.result.splitlines()[0] if ev.result else ev.status
+            t.append(msg[:200], style=C["red"])
+            return t
+        first = ev.result.splitlines()[0] if ev.result else ""
+        t.append(first[:200] if first else f"{nlines} line(s) written",
+                 style=C["green"])
         return t
 
     def _subagent_panel(self, ev: ToolEvent) -> Panel:

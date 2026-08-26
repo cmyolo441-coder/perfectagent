@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -33,8 +34,9 @@ from . import config
 from . import systemprompt
 from .autopilot import AutoPilot, RouteDecision
 from .cassette import Cassette
-from .client import (APIError, TurnCancelled, chat_blocking, chat_stream,
-                     estimate_tokens, is_context_overflow)
+from .client import (APIError, TurnCancelled, assistant_message,
+                     chat_blocking, chat_stream, estimate_tokens,
+                     is_context_overflow)
 from .config import Config, Effort, Model, Provider, PROVIDERS, model_by_id
 from .attention import AttentionEconomy
 from .bandit import BanditRouter
@@ -472,8 +474,10 @@ class Agent:
                  on_status: Callable[[str], None],
                  approve: Callable[[Tool, dict], bool],
                  should_cancel: Callable[[], bool] | None = None,
-                 on_route: Callable[[RouteDecision], None] | None = None,
-                 ) -> Turn:
+                  on_route: Callable[[RouteDecision], None] | None = None,
+                  on_tool_output: Callable[[str, str], None] | None = None,
+                  on_tool_args: Callable[[str, str], None] | None = None,
+                  ) -> Turn:
         """Run one user turn through the full agent loop."""
         turn = Turn(user_text=user_text, model_id=self.model.id,
                     effort=self.cfg.effort)
@@ -509,11 +513,12 @@ class Agent:
         # blow the context window by itself — cap it so the turn can still
         # run. The full text stays in the event log; the model sees a
         # truncated copy with instructions to re-read from disk if needed.
+        full_text = user_text
         user_text = self._cap_user_message(user_text)
 
         self.messages.append({"role": "user", "content": user_text})
         user_ev = self.log.append("user.message",
-                                  {"text": user_text,
+                                  {"text": full_text,
                                    "session": self.session_id},
                                   actor="human", provenance="user")
 
@@ -538,17 +543,20 @@ class Agent:
                 except Exception:
                     pass
                 result = self._complete(on_token, on_reasoning, on_status,
-                                        should_cancel)
+                                        should_cancel,
+                                        on_tool_args=on_tool_args)
 
                 if result.reasoning:
                     turn.reasoning += result.reasoning
 
+                # every completion (tool iterations included) burns tokens —
+                # record usage for each call so the budget governor and the
+                # ledger see the real spend, not just the final reply
+                self._emit_cost(result.usage)
+
                 if result.tool_calls:
-                    self.messages.append({
-                        "role": "assistant",
-                        "content": result.content or None,
-                        "tool_calls": result.tool_calls,
-                    })
+                    self.messages.append(assistant_message(
+                        result.content, result.tool_calls, result.reasoning))
                     if result.content:
                         turn.assistant_text += result.content
                     for tc in result.tool_calls:
@@ -559,7 +567,8 @@ class Agent:
                         turn.tools.append(ev)
                         on_tool_call(ev)
                         self._execute_tool(ev, approve, on_status,
-                                           causation_id=user_ev.id)
+                                           causation_id=user_ev.id,
+                                           on_tool_output=on_tool_output)
                         on_tool_update(ev)
                         self.log.append(
                             "tool.result",
@@ -587,14 +596,18 @@ class Agent:
                                  "session": self.session_id},
                                 actor="sovereign", provenance="model",
                                 causation_id=user_ev.id)
-                self._emit_cost(result.usage)
                 self._detect_goal_clauses(result.content)
                 break
             else:
                 turn.error = f"stopped after {config.MAX_TOOL_ITERATIONS} tool iterations"
         except APIError as e:
             turn.error = str(e)
-            self.messages.pop()  # drop the failed user message
+            # only drop this turn's user prompt when nothing else was
+            # appended after it (failed first complete). After tool calls,
+            # popping would orphan an assistant tool_call and the next
+            # request dies with a thinking-history / pairing error.
+            if self.messages and self.messages[-1].get("role") == "user":
+                self.messages.pop()
             self.log.append("turn.error", {"error": str(e)})
         except TurnCancelled:
             turn.error = "cancelled"
@@ -637,8 +650,10 @@ class Agent:
     def _cap_user_message(self, text: str) -> str:
         """Cap a single user message so it can never consume the whole
         context window on its own (a giant paste of a file/log). The cap
-        is a quarter of the fit budget — plenty for any real instruction,
-        small enough that the rest of the conversation always fits."""
+        keeps roughly three quarters of the fit budget as characters —
+        plenty for any real instruction, small enough that the rest of
+        the conversation always fits. The full text is preserved in the
+        event log by the caller."""
         cap_chars = int(self._fit_budget() * 3.2 // 4)  # budget tokens -> chars
         if len(text) <= cap_chars:
             return text
@@ -720,6 +735,9 @@ class Agent:
                     fn = tc.get("function") or {}
                     n += len(fn.get("name", "")) + len(
                         fn.get("arguments") or "")
+            rc = m.get("reasoning_content") or m.get("reasoning")
+            if rc:
+                n += len(rc)
         return n
 
     def _trim_oldest_assistant(self, budget: int) -> None:
@@ -879,13 +897,14 @@ class Agent:
                 self.goal.prove_clause(clause.id, True, "human_approval",
                                        detail="model claim, advisory clause")
 
-    def _complete(self, on_token, on_reasoning, on_status, should_cancel=None):
+    def _complete(self, on_token, on_reasoning, on_status, should_cancel=None,
+                  on_tool_args=None):
         schemas = self._tool_schemas()
         # cassette replay: zero API cost, fully deterministic (§20.2)
         if self.cassette is not None and self.cassette.mode == "replay":
             from .client import StreamResult
             stored = self.cassette.replay(self.model.id, self.messages,
-                                          schemas)
+                                          schemas, self.effort.key)
             if stored is None:
                 raise APIError("cassette replay miss — request not in the "
                                "recorded cassette (deterministic replay "
@@ -904,6 +923,7 @@ class Agent:
                                on_token=on_token,
                                on_reasoning=on_reasoning,
                                on_tool_start=lambda n: on_status(f"tool:{n}"),
+                               on_tool_args=on_tool_args,
                                should_cancel=should_cancel,
                                on_overflow=self._overflow_shrink)
 
@@ -924,6 +944,7 @@ class Agent:
                                      on_token=on_token,
                                      on_reasoning=on_reasoning,
                                      on_tool_start=lambda n: on_status(f"tool:{n}"),
+                                     on_tool_args=on_tool_args,
                                      should_cancel=should_cancel,
                                      on_overflow=self._overflow_shrink)
             elif e.status == 400 and "tool" in msg and schemas:
@@ -963,7 +984,8 @@ class Agent:
                                  {"content": result.content,
                                   "reasoning": result.reasoning,
                                   "tool_calls": result.tool_calls,
-                                  "usage": result.usage})
+                                  "usage": result.usage},
+                                 effort_key=self.effort.key)
         return result
 
     # -- autonomy + gating -----------------------------------------------------
@@ -1127,7 +1149,9 @@ class Agent:
     def _execute_tool(self, ev: ToolEvent,
                       approve: Callable[[Tool, dict], bool],
                       on_status: Callable[[str], None],
-                      causation_id: str | None = None) -> None:
+                      causation_id: str | None = None,
+                      on_tool_output: Callable[[str, str], None] | None = None,
+                      ) -> None:
         tool = self.tools.get(ev.name)
         started = time.time()
         if tool is None:
@@ -1196,8 +1220,13 @@ class Agent:
             ev.result = cached
             ev.status = "done"
         else:
+            # shell tools stream their output live — hand them the relay
+            extra = {}
+            if on_tool_output is not None and ev.name in ("run_command",
+                                                          "live_shell"):
+                extra["on_output"] = on_tool_output
             try:
-                ev.result = tool.handler(**ev.args)
+                ev.result = tool.handler(**ev.args, **extra)
                 ev.status = "done"
             except TypeError as e:
                 ev.result = f"ERROR: bad arguments for {ev.name}: {e}"
@@ -1264,7 +1293,11 @@ class Agent:
     def _workflow_step(self, item: dict) -> dict:
         """Execute ONE workflow step on the Crew (real subagent). Steps
         within a phase arrive sequentially here; the crew runs each in
-        the background and we wait for its verdict."""
+        the background and we wait for its verdict.
+
+        The spawned agent is ALWAYS closed on the way out (success, error,
+        OR wait-timeout) — a leaked sub-agent keeps its slot in the crew
+        pool and its open file handles, eventually starving later runs."""
         try:
             agent = self.crew.spawn(
                 item["task"], role=item.get("role", "coder"),
@@ -1273,16 +1306,23 @@ class Agent:
                 model_id=str(item.get("model", "") or ""))
         except CrewError as e:
             return {"status": "error", "summary": str(e)}
-        self.crew.wait([agent.id], timeout=240.0)
-        status = ("done" if agent.state == "done"
-                  else "blocked" if agent.state == "blocked"
-                  else "error")
-        summary = agent.summary or agent.error or ""
         try:
-            self.crew.close(agent.id)
-        except CrewError:
-            pass
-        return {"status": status, "summary": summary}
+            try:
+                self.crew.wait([agent.id], timeout=240.0)
+            finally:
+                # close on EVERY exit path — wait raising (timeout, signal,
+                # kernel error) used to leak the subagent entirely.
+                try:
+                    self.crew.close(agent.id)
+                except CrewError:
+                    pass
+            status = ("done" if agent.state == "done"
+                      else "blocked" if agent.state == "blocked"
+                      else "error")
+            summary = agent.summary or agent.error or ""
+            return {"status": status, "summary": summary}
+        except Exception as e:
+            return {"status": "error", "summary": f"workflow step failed: {e}"}
 
     def export_report(self, fmt: str = "md") -> Path:
         """Write the enterprise audit report (md or html) to the cwd."""
@@ -1326,9 +1366,8 @@ class Agent:
                   if m.provider != current.provider
                   and m.id != current.id
                   and m.supports_tools >= current.supports_tools]
-        for m in same_provider + others:
-            return m.id
-        return None
+        candidates = same_provider + others
+        return candidates[0].id if candidates else None
 
     # -- enterprise: turn scorecard ---------------------------------------------------
 
@@ -2076,7 +2115,9 @@ class Agent:
         """Run the drafted role's own benchmark with its brief; score
         the reply's structure (same yardstick as evolution)."""
         from . import systemprompt
-        system = systemprompt.WORKER.format(role_brief=draft.brief)
+        from .team import MAX_WORKERS
+        system = systemprompt.WORKER.format(role_brief=draft.brief,
+                                            max_workers=MAX_WORKERS)
         result = chat_blocking(
             self.provider, self.model, self.effort,
             [{"role": "system", "content": system},
@@ -2090,10 +2131,17 @@ class Agent:
 
     def _ci_runner(self, tests: list[str]) -> tuple[bool, str]:
         """Run the impacted tests through the real shell."""
+        import sys
+        from shlex import quote
         from .tools import run_command
-        cmd = "python -m pytest -q " + " ".join(tests)
+        cmd = (f"{quote(sys.executable)} -m pytest -q "
+               + " ".join(quote(t) for t in tests))
         out = run_command(cmd, timeout=300)
-        return ("exit code: 0" in out, out)
+        # only trust the exit-code line the runner itself emits — never a
+        # substring that could appear inside test output
+        ok = any(line.strip() == "exit code: 0"
+                 for line in out.splitlines())
+        return (ok, out)
 
     def _dual_fast(self, question: str) -> str:
         """System 1: one cheap direct model call."""
@@ -2289,8 +2337,8 @@ class Agent:
                 return "ERROR: goal must be a non-empty string"
             plan = compiler.compile(goal)
             r = self.formal.verify_plan(plan.waves)
-            head = (f"FORMAL VERIFICATION — {'PASS ✓' if r.ok else
-                    'REJECTED ✗'} "
+            verdict = "PASS ✓" if r.ok else "REJECTED ✗"
+            head = (f"FORMAL VERIFICATION — {verdict} "
                     f"({r.checked} trace(s) checked)")
             return "\n".join([head, compiler.format(plan)]
                              + [f"  ⚠ {v['property']}: {v['why']}"
@@ -2507,12 +2555,19 @@ class Agent:
         try:
             config.ensure_dirs()
             path = config.SESSIONS_DIR / f"{self.session_id}.json"
-            path.write_text(json.dumps({
+            # snapshot the messages once — the turn thread keeps mutating
+            # self.messages and json.dumps iterating a growing list raises
+            messages = list(self.messages)
+            data = json.dumps({
                 "session_id": self.session_id,
                 "model_id": self.cfg.model_id,
                 "saved_at": datetime.now().isoformat(),
-                "messages": self.messages,
-            }, indent=1))
+                "messages": messages,
+            }, indent=1)
+            # atomic write: never leave a torn/truncated session file
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(data)
+            os.replace(tmp, path)
             return path
-        except OSError:
+        except (OSError, ValueError, TypeError, RuntimeError):
             return None

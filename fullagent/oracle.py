@@ -43,11 +43,23 @@ class Oracle:
         dead_ends_hit = len(st.dead_ends)
         facts_learned = len(st.facts)
         cost_by_clause: dict[str, float] = {}
+        unattributed_usd = 0.0
         for ev in self.log.events():
-            if ev.type == "cost.incurred" and ev.correlation_id:
+            if ev.type != "cost.incurred":
+                continue
+            usd = float(ev.data.get("usd", 0.0))
+            if ev.correlation_id:
                 cost_by_clause[ev.correlation_id] = \
-                    cost_by_clause.get(ev.correlation_id, 0.0) + \
-                    float(ev.data.get("usd", 0.0))
+                    cost_by_clause.get(ev.correlation_id, 0.0) + usd
+            else:
+                # keep the unattributed tail visible instead of dropping
+                # it on the floor — without this sentinel the report
+                # claims cost_usd equals sum(cost_by_clause.values()),
+                # which is a lie whenever any cost event has no
+                # correlation_id (e.g. a preflight probe, an idle tick)
+                unattributed_usd += usd
+        if unattributed_usd > 0:
+            cost_by_clause["__unattributed__"] = round(unattributed_usd, 6)
         cal = self.calibrate()
         return {
             "events": len(self.log),

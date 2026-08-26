@@ -42,11 +42,11 @@ from dataclasses import dataclass, field
 from . import systemprompt
 from .config import PROVIDERS, model_by_id
 from .kernel import EventLog, fold
-from .team import (ROLES, DEFAULT_ROLE, MAX_WORKER_STEPS, _WRITE_LOCK,
-                   chat_with_retry, parse_worker_final)
+from .team import (ROLES, DEFAULT_ROLE, MAX_WORKER_STEPS, MAX_WORKERS,
+                   _WRITE_LOCK, chat_with_retry, parse_worker_final)
 from .tools import Tool, build_registry, parse_tool_arguments
 
-MAX_AGENTS = 8             # roster ceiling (queued + active agents)
+MAX_AGENTS = MAX_WORKERS   # roster ceiling (queued + active agents)
 MAX_SEND_STEPS = 40        # tool-loop budget per follow-up message
 WAIT_POLL_SECONDS = 0.05   # wait() polling granularity
 
@@ -84,6 +84,18 @@ class CrewAgent:
     finished_at: float = 0.0
     pending_messages: list = field(default_factory=list)
     model_id: str = ""          # per-agent model override ("" = crew default)
+    read_only: bool = False     # tool restriction survives follow-ups/resume
+    # Per-agent mutex. The Crew's queue serialises worker passes, but
+    # the *sovereign* thread (TUI, workflow executor, council) can call
+    # `crew.send`, `crew.close`, `crew.resume` while the worker is
+    # between two `_run_loop` steps. Without this lock, the worker
+    # reads `agent.state == "running"` and the sovereign flips it to
+    # `"closed"` a microsecond later — the worker enqueues a follow-up
+    # run for an already-retired agent, and the user sees the agent
+    # ignore close() for one extra loop iteration. Worse: the
+    # `pending_messages` list is shared, so a `pop(0)` from the worker
+    # interleaves with a sovereign `append`, silently losing follow-ups.
+    mutex: threading.RLock = field(default_factory=threading.RLock)
 
     @property
     def icon(self) -> str:
@@ -155,6 +167,9 @@ class Crew:
         while True:
             agent, read_only, max_steps = self._jobs.get()
             try:
+                if agent.state == "closed":
+                    # retired while still queued — never run it
+                    continue
                 self._run_loop(agent, read_only, max_steps)
             except Exception as e:  # noqa: BLE001 — never kill the queue
                 agent.state = "error"
@@ -198,7 +213,7 @@ class Crew:
                       for a in self._agents.values()):
                 nickname = f"{nickname}-{self._counter}"
             agent = CrewAgent(id=agent_id, nickname=nickname, role=role,
-                              task=task)
+                              task=task, read_only=bool(read_only))
             override = model_by_id(str(model_id or "")) if model_id else None
             if override is not None:
                 agent.model_id = override.id
@@ -212,7 +227,7 @@ class Crew:
                 f"worker:{role}", agent.messages)
         else:
             systemprompt.with_system(agent.messages,
-                                     systemprompt.worker(role))
+                                     systemprompt.worker(role, self.max_agents))
         agent.messages.append({"role": "user", "content": user})
 
         self.log.append("crew.spawn",
@@ -237,23 +252,31 @@ class Crew:
         message = str(message or "").strip()
         if not message:
             raise CrewError("cannot send an empty message")
-        if agent.state == "closed":
-            raise CrewError(
-                f"agent {agent_id} is closed — resume it first")
-        self.log.append("crew.message",
-                        {"id": agent_id, "chars": len(message),
-                         "interrupt": bool(interrupt)},
-                        actor="sovereign")
-        if agent.state == "running":
-            agent.pending_messages.append(message)
-            return agent
-        if interrupt:
-            agent.summary = ""
-        agent.messages.append({"role": "user",
-                               "content": f"FOLLOW-UP: {message}"})
-        agent.state = "running"
-        agent.error = ""
-        self._enqueue(agent, False, MAX_SEND_STEPS)
+        # The full critical section runs under the agent's mutex. Holding
+        # the lock blocks the worker from observing a half-written state
+        # (e.g. messages appended before state flips to "running"), and
+        # in the "agent running" branch it serialises the
+        # pending_messages.append with the worker's eventual pop.
+        with agent.mutex:
+            if agent.state == "closed":
+                raise CrewError(
+                    f"agent {agent_id} is closed — resume it first")
+            self.log.append("crew.message",
+                            {"id": agent_id, "chars": len(message),
+                             "interrupt": bool(interrupt)},
+                            actor="sovereign")
+            if agent.state == "running":
+                agent.pending_messages.append(message)
+                return agent
+            if interrupt:
+                agent.summary = ""
+            agent.messages.append({"role": "user",
+                                   "content": f"FOLLOW-UP: {message}"})
+            agent.state = "running"
+            agent.error = ""
+            # keep the spawn-time tool restriction — a read-only subagent must
+            # never gain write tools through a follow-up
+            self._enqueue(agent, agent.read_only, MAX_SEND_STEPS)
         return agent
 
     def wait(self, ids: list[str] | None = None,
@@ -364,6 +387,8 @@ class Crew:
                   max_steps: int) -> None:
         """One subagent's bounded tool loop. Never raises: every failure
         lands in the agent's report and is sealed as crew.done."""
+        if agent.state == "closed":
+            return
         spec = ROLES[agent.role]
         tools = dict(self._toolsets[agent.role])
         if read_only:
@@ -390,9 +415,10 @@ class Crew:
                         result.usage.get("completion_tokens", 0) or 0)
                 if not result.tool_calls:
                     break
-                agent.messages.append({"role": "assistant",
-                                       "content": result.content or None,
-                                       "tool_calls": result.tool_calls})
+                from .client import assistant_message
+                agent.messages.append(assistant_message(
+                    result.content, result.tool_calls,
+                    getattr(result, "reasoning", "") or ""))
                 tool_names = []
                 for tc in result.tool_calls:
                     fn = tc.get("function") or {}
@@ -433,6 +459,9 @@ class Crew:
                                      "tools": tool_names[:6]},
                                     actor=f"crew:{agent.id}")
             final = (result.content if result is not None else "") or ""
+            if agent.state == "closed":
+                # retired mid-loop — keep the closed state, never resurrect
+                return
             state, summary = parse_worker_final(final)
             agent.summary = summary[:1800]
             agent.state = state if state in ("done", "blocked") else "done"

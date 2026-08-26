@@ -137,7 +137,11 @@ class SnapshotStore:
                 continue
             try:
                 p.parent.mkdir(parents=True, exist_ok=True)
-                tmp = p.with_suffix(p.suffix + ".snap-tmp")
+                # Append, don't replace, the suffix: paths with no existing
+                # extension (Makefile, LICENSE, ...) used to collide because
+                # with_suffix("") is a no-op, so tmp == p and the atomic
+                # write silently clobbered the destination before replace.
+                tmp = p.with_name(p.name + ".snap-tmp")
                 tmp.write_bytes(data)
                 os.replace(tmp, p)
                 restored += 1
@@ -186,7 +190,15 @@ class SnapshotStore:
                 continue
             for f in sub.iterdir():
                 h = sub.name + f.name
-                if h not in keep and not f.name.endswith(".tmp"):
+                if f.name.endswith(".tmp"):
+                    # abandoned atomic-write leftovers — sweep them too,
+                    # otherwise they accumulate forever
+                    try:
+                        f.unlink()
+                        deleted += 1
+                    except OSError:
+                        pass
+                elif h not in keep:
                     try:
                         f.unlink()
                         deleted += 1

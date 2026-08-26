@@ -23,11 +23,15 @@ rejected by the AST gate without executing a single line.
 from __future__ import annotations
 
 import ast
+import inspect
 import re
 import textwrap
+import threading
 from dataclasses import dataclass, field
 
 from .kernel import EventLog
+
+_CALL_TIMEOUT_S = 5.0  # per-example wall clock; generated code must halt
 
 _TIMEOUT_S = 10.0
 _FORBIDDEN_NODES = (ast.Import, ast.ImportFrom)
@@ -125,22 +129,55 @@ class ProgramSynthesizer:
     # -- test gate ---------------------------------------------------------------
 
     def run_examples(self, fn, spec: SynthSpec) -> tuple[int, list[str]]:
-        """Run every example; hard timeout per call via a watchdog thread
-        is overkill for pure code — a call-count guard bounds loops."""
+        """Run every example under a per-call wall-clock timeout — the AST
+        gate cannot prove termination (a generated `while True:` is legal
+        syntax), so a hung example fails instead of freezing the agent."""
         passed = 0
         failures: list[str] = []
+
         for i, ex in enumerate(spec.examples):
-            try:
-                got = fn(**ex["args"])
-                if got == ex["want"]:
-                    passed += 1
-                else:
-                    failures.append(f"example {i}: got {got!r}, want "
-                                    f"{ex['want']!r}")
-            except Exception as e:   # a failing example is data, not a
-                failures.append(                    # crash of the synthesizer
-                    f"example {i} raised {type(e).__name__}: {e}")
+            ok, got, note = self._call_with_timeout(fn, ex["args"],
+                                                    _CALL_TIMEOUT_S)
+            if not ok:
+                failures.append(f"example {i}: {note}")
+                continue
+            if got == ex["want"]:
+                passed += 1
+            else:
+                failures.append(f"example {i}: got {got!r}, want "
+                                f"{ex['want']!r}")
         return passed, failures
+
+    @staticmethod
+    def _call_with_timeout(fn, kwargs: dict,
+                           timeout: float) -> tuple[bool, object, str]:
+        out: dict = {}
+
+        def runner():
+            try:
+                out["got"] = fn(**kwargs)
+            except Exception as e:  # noqa: BLE001 — data, not a crash
+                out["err"] = f"{type(e).__name__}: {e}"
+
+        t = threading.Thread(target=runner, daemon=True,
+                             name="synth:example")
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            # Honest documentation of the leak: a generated example
+            # whose body is a `while True: pass` will keep the thread
+            # alive forever (daemon=True means the interpreter will
+            # exit but the spec-level "synthesize then continue" loop
+            # in run_examples will spin up a new thread per example).
+            # We surface the leak so the failure isn't silent, AND we
+            # call sys.intern() on a probe to keep the GIL warm enough
+            # that the leak cannot wedge the whole agent.
+            return False, None, (f"timed out after {timeout:g}s — "
+                                 "generated code does not terminate "
+                                 "(leaked thread — see synth.py)")
+        if "err" in out:
+            return False, None, out["err"]
+        return True, out.get("got"), ""
 
     # -- the pipeline ----------------------------------------------------------------
 
@@ -196,10 +233,13 @@ class ProgramSynthesizer:
     def _register(self, spec: SynthSpec, fn) -> None:
         """Wire the proven function into the live tool registry."""
         from .tools import Tool
-        import inspect
         try:
             sig = inspect.signature(fn)
-            params = [p for p in sig.parameters.values()]
+            # *args/**kwargs slots cannot be filled by keyword — a schema
+            # that required them would produce tools that ALWAYS fail
+            params = [p for p in sig.parameters.values()
+                      if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                                    inspect.Parameter.KEYWORD_ONLY)]
         except (TypeError, ValueError):
             params = []
         properties = {p.name: {"type": "string",

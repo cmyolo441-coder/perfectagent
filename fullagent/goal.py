@@ -175,11 +175,18 @@ class GoalContract:
                 f"closing_rule must be one of {CLOSING_RULES}")
         norm: list[dict] = []
         total = 0.0
+        seen_ids: set[str] = set()
         for i, c in enumerate(clauses):
             cid = str(c.get("id") or f"C{i + 1}")
             text = str(c.get("text", "")).strip()
             if not text:
                 raise GoalContractError(f"clause {cid}: empty text")
+            # proofs and waivers are keyed by clause id — duplicates would
+            # make one twin unprovable and waive/prove BOTH together
+            if cid.lower() in seen_ids:
+                raise GoalContractError(
+                    f"duplicate clause id {cid!r} — ids must be unique")
+            seen_ids.add(cid.lower())
             kind = str(c.get("kind", "OUTCOME")).upper()
             if kind not in CLAUSE_KINDS:
                 raise GoalContractError(
@@ -564,15 +571,25 @@ class GoalContract:
             return GoalStatus()
         clauses_raw = g.get("clauses") or []
         # proof history, walked with event seqs: latest proof per clause
-        # wins; a regression AFTER a proof reopens the clause (§42.4)
+        # wins; a regression AFTER a proof reopens the clause (§42.4).
+        # Only events AFTER the current goal.set count — proofs from a
+        # previous contract must not leak into this one.
+        last_set_seq = -1
+        for ev in self.log.events():
+            if ev.type == "goal.set":
+                last_set_seq = ev.seq
         proven: dict[str, tuple[int, dict]] = {}
         regressed_after: dict[str, int] = {}
         waived: set[str] = set()
         for ev in self.log.events():
+            if ev.seq <= last_set_seq:
+                continue
             d = ev.data
             if ev.type == "clause.proven":
                 proven[d.get("clause", "")] = (ev.seq, d)
             elif ev.type == "clause.regressed":
+                if d.get("anti") or d.get("invariant"):
+                    continue  # anti/invariant regressions don't reopen clauses
                 cid = d.get("clause", "")
                 regressed_after[cid] = max(regressed_after.get(cid, -1),
                                            ev.seq)
@@ -612,9 +629,12 @@ class GoalContract:
         if isinstance(velocity, (int, float)) and velocity > 1e-6:
             eta = int(distance / (velocity / 10.0))
 
-        # focus history
-        focus_history = [f.get("to") for f in st.focus_shifts
-                         if f.get("to")]
+        # focus history — scoped to the current contract like the proofs
+        # (fold entries carry no seq, so filter on the event walk)
+        focus_history = [ev.data.get("to") for ev in self.log.events()
+                         if ev.type == "goal.focus"
+                         and ev.seq > last_set_seq
+                         and ev.data.get("to")]
         focus = focus_history[-1] if focus_history else None
 
         # drift: >=30% of attributed cost on the lowest-weight open clause

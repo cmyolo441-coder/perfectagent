@@ -96,7 +96,7 @@ class TreeSearch:
 
         root = StrategyNode(untried=[(0, s) for s in strategies])
         best: dict = {}
-        best_score = -1.0
+        best_score = 0.0  # evaluator range is [0,1] — never leak a sentinel
         it = 0
         while it < iterations and time.monotonic() - t0 < deadline_s:
             it += 1

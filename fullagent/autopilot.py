@@ -39,6 +39,11 @@ _GOAL_VERBS = (
     "convert", "optimize", "optimise", "banao", "thik karo", "likho",
 )
 
+# word-boundary match so "fix" never fires inside "suffix" / "add" inside
+# "address" — same discipline as _WEB_TRIGGER_RE above
+_GOAL_VERB_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(v) for v in _GOAL_VERBS) + r")\b")
+
 _QUESTION_STARTERS = (
     "what", "why", "how", "when", "where", "who", "which", "is ", "are ",
     "do ", "does ", "can ", "kya", "kaun", "kab", "kahan", "kyu", "kaise",
@@ -102,7 +107,7 @@ class AutoPilot:
 
         # 2. goal mode — a verifiable mission, not a question
         if not goal_active and not is_question:
-            if any(v in low for v in _GOAL_VERBS):
+            if _GOAL_VERB_RE.search(low):
                 d.suggest_goal = True
                 d.goal_statement = text.strip()[:100]
                 d.goal_clauses = self._draft_clauses(text)

@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 
 from . import systemprompt
 from .kernel import EventLog
+from .team import MAX_WORKERS
 
 # ---------------------------------------------------------------------------
 # PromptVault — hash-sealed prompts, the only source of truth at runtime
@@ -70,7 +71,7 @@ class PromptVault:
         self._seal("master", systemprompt.get("master"))
         for role in systemprompt.ROLE_BRIEFS:
             self._seal(f"worker:{role}",
-                       systemprompt.worker(role))
+                       systemprompt.worker(role, MAX_WORKERS))
 
     def _seal(self, name: str, text: str) -> None:
         self._sealed[name] = text

@@ -120,37 +120,41 @@ class AttentionEconomy:
         ceil = int(budget * _CEIL_FRAC)
 
         # proportional share, clamped to [floor, ceil]; iterate the
-        # surplus back to unclamped sections (water-filling)
+        # surplus back to unclamped sections (water-filling): a section
+        # pinned at its ceiling frees its excess for the next round until
+        # nobody new clamps
         limits: dict[str, int] = {}
-        remaining_budget = budget
-        unclamped = set(names)
-        for _ in range(6):                       # converges fast
-            share_pool = sum(bids[s] for s in unclamped) or 1.0
+        fixed: set[str] = set()          # pinned at the ceiling this round
+
+        def _pinned_total() -> int:
+            return sum(limits[s] for s in fixed)
+
+        for _ in range(6):               # converges fast
+            pool = [s for s in names if s not in fixed]
+            pool_bid = sum(bids[s] for s in pool) or 1.0
+            avail = budget - _pinned_total()
             changed = False
-            for s in sorted(unclamped):
-                want = int(remaining_budget * bids[s] / share_pool)
-                want = max(floor, min(ceil, want))
-                if s not in limits or limits[s] != want:
-                    limits[s] = want
+            for s in sorted(pool):
+                want = int(avail * bids[s] / pool_bid)
+                if want >= ceil:
+                    limits[s] = ceil
+                    fixed.add(s)
                     changed = True
-            spent = sum(limits.values())
-            if not changed or spent >= budget:
+                else:
+                    limits[s] = max(floor, min(ceil, want))
+            if not changed:
                 break
-            # if over budget, shave the largest allocations down
-            over = spent - budget
-            for s in sorted(limits, key=lambda k: -limits[k]):
-                if over <= 0:
-                    break
-                shave = min(over, limits[s] - floor)
-                if shave > 0:
-                    limits[s] -= shave
-                    over -= shave
-            remaining_budget = budget - sum(
-                min(l, ceil) for l in limits.values())
-            unclamped = {s for s in names
-                         if limits.get(s, floor) < ceil}
-            if over <= 0 and spent <= budget:
+
+        # floors may have pushed the total over budget — shave the
+        # largest allocations back down toward their floor
+        over = sum(limits.values()) - budget
+        for s in sorted(limits, key=lambda k: -limits[k]):
+            if over <= 0:
                 break
+            shave = min(over, limits[s] - floor)
+            if shave > 0:
+                limits[s] -= shave
+                over -= shave
 
         for s in names:
             text = str(sections[s])
@@ -179,13 +183,21 @@ class AttentionEconomy:
             if len(text) <= limit:
                 out[name] = text
                 continue
+            # a zero/negative limit means EVERYTHING is cut — text[-0:]
+            # would hand back the whole body, so guard the slices
+            if limit <= 0:
+                out[name] = (f"\n[…trimmed by the attention auction — "
+                             f"{len(text):,} chars wanted, 0 allocated]")
+                continue
             head = int(limit * _KEEP_HEAD)
             tail = limit - head
-            out[name] = (text[:head]
+            trimmed = text[:head]
+            if tail > 0:
+                trimmed += "\n…\n" + text[-tail:]
+            out[name] = (trimmed
                          + f"\n[…trimmed by the attention auction — "
                            f"{len(text):,} chars wanted, {limit:,} "
-                           f"allocated]\n"
-                         + text[-tail:])
+                           f"allocated]")
         return out
 
     def format_last(self) -> str:

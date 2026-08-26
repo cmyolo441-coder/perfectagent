@@ -67,7 +67,7 @@ TAXONOMY: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r"ZeroDivisionError", re.I),
      "division_by_zero",
      "guard the divisor against zero"),
-    (re.compile(r"AssertionError|assert", re.I),
+    (re.compile(r"AssertionError", re.I),
      "assertion_failed",
      "the behaviour under test is wrong — inspect the assertion"),
     (re.compile(r"command not found|not recognized", re.I),

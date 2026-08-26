@@ -34,7 +34,14 @@ def _pick_app_dir() -> Path:
             return c
         except OSError:
             continue
-    return Path(tempfile.gettempdir())  # last resort: tmp itself
+    # last resort: per-user tmp subdir so two users on the same box don't
+    # clobber each other's config / event log / sessions
+    fallback = Path(tempfile.gettempdir()) / f"fullagent-{uid}"
+    try:
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+    except OSError:
+        return Path(tempfile.gettempdir())
 
 
 APP_DIR = _pick_app_dir()
@@ -87,6 +94,16 @@ PROVIDERS: dict[str, Provider] = {
         ),
         color="#8be9fd",
     ),
+    "opencode": Provider(
+        key="opencode",
+        name="OpenCode",
+        base_url="https://opencode.ai/zen/v1",
+        api_key=os.environ.get(
+            "OPENCODE_API_KEY",
+            "sk-h11yU0O2sQxGL9CC0Y5bHQxtdWQSqXAi1mRUG7TSLpA7EvFAzYBpyAJ7NQ6xhDvm",
+        ),
+        color="#bd93f9",
+    ),
     "tokenrouter": Provider(
         key="tokenrouter",
         name="TokenRouter",
@@ -107,6 +124,16 @@ PROVIDERS: dict[str, Provider] = {
         ),
         color="#50fa7b",
     ),
+    "zenmux": Provider(
+        key="zenmux",
+        name="ZenMux",
+        base_url="https://zenmux.ai/api/v1",
+        api_key=os.environ.get(
+            "ZENMUX_API_KEY",
+            "sk-ai-v1-9424a61af5fea4355a34de00530e189d1972da4d4f8324815be47b8d5a6280eb",
+        ),
+        color="#f1fa8c",
+    ),
 }
 
 MODELS: list[Model] = [
@@ -121,6 +148,12 @@ MODELS: list[Model] = [
     Model("gemini-3.1-pro", "zen", "Gemini 3.1 Pro",
           context_window=1_048_576),
     Model("gpt-5.2", "zen", "GPT-5.2", context_window=400_000),
+    Model("muse-spark-1.2-contributor-free", "opencode",
+          "Muse Spark 1.2", tag="FREE", tag_color="green",
+          supports_tools=True, supports_reasoning=True),
+    Model("opencode/muse-spark-1.2-contributor-free", "opencode",
+          "Muse Spark 1.2", tag="FREE", tag_color="green",
+          supports_tools=True, supports_reasoning=True),
     # supports_reasoning=True means the backend understands a reasoning
     # switch — the client uses it to send an EXPLICIT "none" (thinking
     # off globally), not to turn thinking on.
@@ -128,10 +161,17 @@ MODELS: list[Model] = [
           tag_color="green", supports_reasoning=True),
     Model("deepseek-ai/DeepSeek-V3.2", "tokenrouter", "DeepSeek V3.2",
           supports_reasoning=False, context_window=131_072),
+    Model("deepseek/deepseek-v4-pro-0813-free", "tokenrouter",
+          "DeepSeek V4 Pro 0813", tag="FREE", tag_color="green",
+          supports_tools=True, supports_reasoning=True,
+          context_window=131_072),
     Model("moonshotai/Kimi-K2-Instruct", "tokenrouter", "Kimi K2",
           context_window=131_072),
     Model("agnes-2.5-flash", "agnes", "Agnes 2.5 Flash", tag="FAST",
           tag_color="green", supports_tools=True, supports_reasoning=True),
+    Model("dots-studio/dots3-note-prev", "zenmux", "Dots.OCR Note Prev",
+          tag="NEW", tag_color="yellow", supports_tools=True,
+          supports_reasoning=True),
 ]
 
 DEFAULT_MODEL_ID = "mimo-v2.5-free"
@@ -194,9 +234,19 @@ class Config:
         cfg = cls()
         try:
             data = json.loads(CONFIG_FILE.read_text())
+            if not isinstance(data, dict):
+                data = {}
             for k in ("model_id", "effort", "auto_approve", "show_reasoning",
                       "theme", "prompt"):
-                if k in data:
+                if k not in data:
+                    continue
+                if k in ("auto_approve", "show_reasoning"):
+                    # safety gates must be real booleans — a drifted
+                    # config with "auto_approve": "false" (truthy string)
+                    # would silently disable the approval prompt
+                    if isinstance(data[k], bool):
+                        setattr(cfg, k, data[k])
+                else:
                     setattr(cfg, k, data[k])
             cfg.extra = {k: v for k, v in data.items()
                          if k not in ("model_id", "effort", "auto_approve",
@@ -223,7 +273,11 @@ class Config:
                 "prompt": self.prompt,
             }
             data.update(self.extra)
-            CONFIG_FILE.write_text(json.dumps(data, indent=2))
+            # atomic write: a crash mid-write must never leave truncated
+            # JSON that would reset the whole config on next load
+            tmp = CONFIG_FILE.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(data, indent=2))
+            os.replace(tmp, CONFIG_FILE)
         except OSError:
             pass  # config persistence is a convenience, never a crash path
 

@@ -284,6 +284,11 @@ def check_ast_assert(path: str, symbol: str, kind: str = "def",
         return Verdict(False, "ast_assert",
                        f"{kind} {symbol!r} not found in {p}")
     if has_parameter:
+        if kind == "class" or not isinstance(match, (ast.FunctionDef,
+                                                     ast.AsyncFunctionDef)):
+            return Verdict(False, "ast_assert",
+                           f"has_parameter is not supported for kind="
+                           f"'class' ({symbol!r} is a class)")
         args = match.args
         names = ([a.arg for a in args.args] + [a.arg for a in args.kwonlyargs]
                  + ([args.vararg.arg] if args.vararg else [])
@@ -491,7 +496,15 @@ class Judge:
                     return Verdict(False, ptype, "predicate missing 'path'")
                 if text is None:
                     return Verdict(False, ptype, "predicate missing 'text'")
-                return check_file_contains(str(path), str(text))
+                # an empty search string vacuously matches at position 0 of
+                # ANY content (str.find("") == 0) — without this guard a
+                # predicate {"text": ""} would silently pass for every
+                # file, including empty/missing ones, "proving" clauses
+                # that search for nothing
+                if not isinstance(text, str) or not text:
+                    return Verdict(False, ptype,
+                                   "predicate 'text' is empty")
+                return check_file_contains(str(path), text)
             if ptype == "file_matches":
                 path, pattern = predicate.get("path"), predicate.get("pattern")
                 if not path:
@@ -499,13 +512,19 @@ class Judge:
                 if pattern is None:
                     return Verdict(False, ptype,
                                    "predicate missing 'pattern'")
-                return check_file_matches(str(path), str(pattern))
+                if not isinstance(pattern, str) or not pattern:
+                    return Verdict(False, ptype,
+                                   "predicate 'pattern' is empty")
+                return check_file_matches(str(path), pattern)
             if ptype == "command_output_contains":
                 command, text = predicate.get("command"), predicate.get("text")
                 if not isinstance(command, str) or not command.strip():
                     return Verdict(False, ptype, "predicate missing 'command'")
                 if text is None:
                     return Verdict(False, ptype, "predicate missing 'text'")
+                if not isinstance(text, str) or not text:
+                    return Verdict(False, ptype,
+                                   "predicate 'text' is empty")
                 return check_command_output_contains(
                     command, str(text), _as_timeout(predicate.get("timeout")))
             if ptype == "ast_assert":

@@ -97,27 +97,48 @@ class RacingUniverses:
         cancel = threading.Event()
         deadline = t0 + timeout
         winner: UniverseOutcome | None = None
+        # arm the deadline as an EVENT, not a between-lanes check — a hung
+        # runner that never consults `cancel` would otherwise block forever
+        timer: threading.Timer | None = None
+        if timeout and timeout > 0:
+            timer = threading.Timer(timeout, cancel.set)
+            timer.daemon = True
+            timer.start()
 
-        for s in self.strategies:
-            if time.monotonic() >= deadline:
-                break
-            started = time.monotonic()
-            try:
-                out = self.runner(s, task, cancel)
-                outcome = UniverseOutcome(
-                    strategy=s["id"], result=str(out or ""),
-                    elapsed_ms=int((time.monotonic() - started) * 1000))
-            except Exception as e:    # a crashing universe just loses
-                outcome = UniverseOutcome(
-                    strategy=s["id"],
-                    result=f"ERROR: {e}",
-                    elapsed_ms=int((time.monotonic() - started) * 1000))
-            outcome.passed = self.verifier(task, outcome.result)
-            result.outcomes.append(outcome)
-            if outcome.passed:
-                winner = outcome
-                cancel.set()
-                break
+        try:
+            for s in self.strategies:
+                if time.monotonic() >= deadline:
+                    break
+                started = time.monotonic()
+                try:
+                    out = self.runner(s, task, cancel)
+                    outcome = UniverseOutcome(
+                        strategy=s["id"], result=str(out or ""),
+                        elapsed_ms=int((time.monotonic() - started) * 1000))
+                except Exception as e:    # a crashing universe just loses
+                    outcome = UniverseOutcome(
+                        strategy=s["id"],
+                        result=f"ERROR: {e}",
+                        elapsed_ms=int((time.monotonic() - started) * 1000))
+                if cancel.is_set() and \
+                        time.monotonic() >= deadline:
+                    result.outcomes.append(outcome)
+                    break
+                try:
+                    outcome.passed = self.verifier(task, outcome.result)
+                except Exception as e:
+                    # a raising verifier must fail the lane, not kill the race
+                    outcome.passed = False
+                    outcome.result = (f"VERIFIER ERROR: "
+                                      f"{type(e).__name__}: {e}")
+                result.outcomes.append(outcome)
+                if outcome.passed:
+                    winner = outcome
+                    cancel.set()
+                    break
+        finally:
+            if timer is not None:
+                timer.cancel()
 
         # lanes after the winner (or timeout) never ran — sealed cancelled
         landed = {o.strategy for o in result.outcomes}
