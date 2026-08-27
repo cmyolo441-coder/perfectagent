@@ -179,15 +179,19 @@ tokens, temperature, and reasoning effort.
 
 ## Models & providers
 
-Three OpenAI-compatible providers are built in:
+Five OpenAI-compatible providers are built in:
 
 - **OpenCode Zen** (`https://opencode.ai/zen/v1`) — mimo-v2.5-free,
   big-pickle, grok-code-fast-1, claude-sonnet-4-5, claude-opus-4-6,
-  gemini-3.1-pro, gpt-5.2
+  gemini-3.1-pro, gpt-5.2, muse-spark-1.2-contributor-free
 - **TokenRouter** (`https://api.tokenrouter.com/v1`) — qwen/qwen3.8-max-free,
-  deepseek-ai/DeepSeek-V3.2, moonshotai/Kimi-K2-Instruct
+  deepseek-ai/DeepSeek-V3.2, deepseek/deepseek-v4-pro-0813-free,
+  moonshotai/Kimi-K2-Instruct
 - **Agnes** (`https://apihub.agnes-ai.com/v1`) — agnes-2.5-flash (fast,
   tool-capable, reasoning-aware)
+- **ZenMux** (`https://zenmux.ai/api/v1`) — dots-studio/dots3-note-prev
+- **NVIDIA NIM** (`https://integrate.api.nvidia.com/v1`) —
+  deepseek-ai/deepseek-v4-pro-0813 (1M context, tool-calling, reasoning)
 
 API keys ship as built-in defaults so the app works out of the box;
 environment variables always take precedence if you want to use your
@@ -195,7 +199,7 @@ own:
 
 ```bash
 export OPENCODE_API_KEY=***      # OpenCode Zen (default provider)
-# and/or: TOKENROUTER_API_KEY, AGNES_API_KEY
+# and/or: TOKENROUTER_API_KEY, AGNES_API_KEY, ZENMUX_API_KEY, NVIDIA_API_KEY
 ```
 
 > ⚠️ The built-in keys live in git history — if you push this repo

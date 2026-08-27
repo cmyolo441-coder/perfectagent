@@ -134,6 +134,16 @@ PROVIDERS: dict[str, Provider] = {
         ),
         color="#f1fa8c",
     ),
+    "nvidia": Provider(
+        key="nvidia",
+        name="NVIDIA NIM",
+        base_url="https://integrate.api.nvidia.com/v1",
+        api_key=os.environ.get(
+            "NVIDIA_API_KEY",
+            "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",
+        ),
+        color="#76b900",
+    ),
 }
 
 MODELS: list[Model] = [
@@ -172,6 +182,10 @@ MODELS: list[Model] = [
     Model("dots-studio/dots3-note-prev", "zenmux", "Dots.OCR Note Prev",
           tag="NEW", tag_color="yellow", supports_tools=True,
           supports_reasoning=True),
+    Model("deepseek-ai/deepseek-v4-pro-0813", "nvidia",
+          "DeepSeek V4 Pro 0813", tag="NIM", tag_color="green",
+          supports_tools=True, supports_reasoning=True,
+          context_window=1_048_576),
 ]
 
 DEFAULT_MODEL_ID = "mimo-v2.5-free"

@@ -77,6 +77,10 @@ MODEL_TABLE: dict[str, dict] = {
     "agnes-2.5-flash":           {"capability": 0.74, "cost_in": 0.0,
                                   "cost_out": 0.0, "tools": True,
                                   "reasoning": True},
+    "deepseek-ai/deepseek-v4-pro-0813": {"capability": 0.85,
+                                         "cost_in": 0.000435,
+                                         "cost_out": 0.00087, "tools": True,
+                                         "reasoning": True},
 }
 
 # the strongest model in the table — the escalation ceiling
