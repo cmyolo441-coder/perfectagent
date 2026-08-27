@@ -1,6 +1,43 @@
-# FullAgent
+<div align="center">
 
-An advanced terminal AI agent — pure Python, real code, world-class TUI.
+```
+███████╗██╗   ██╗██╗    ██╗    █████╗  ██████╗ ███████╗███╗ ██╗████████╗
+██╔════╝██║   ██║██║    ██║   ██╔══██╗██╔════╝ ██╔════╝████╗██║╚══██╔══╝
+█████╗  ██║   ██║██║    ██║   ███████║██║  ███╗█████╗  ██╔██╗██║  ██║
+██╔══╝  ██║   ██║██║    ██║   ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║  ██║
+██║     ╚██████╔╝██████╗█████╗██║  ██║╚██████╔╝███████╗██║ ╚████║  ██║
+╚═╝      ╚═════╝ ╚═════╝╚════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝  ╚═╝
+```
+
+<h1>FullAgent <sup><code>v3.1.0</code></sup></h1>
+
+**Advanced Terminal AI Agent — Pure Python, Real Code, World-Class TUI**
+
+<p>
+  <a href="https://github.com/cmyolo441-coder/perfectagent/releases"><img src="https://img.shields.io/github/v/release/cmyolo441-coder/perfectagent?label=release&color=bd93f9&style=flat-square" alt="release"></a>
+  <a href="https://github.com/cmyolo441-coder/perfectagent"><img src="https://img.shields.io/badge/python-3.9%2B-8be9fd?style=flat-square&logo=python&logoColor=white" alt="python"></a>
+  <a href="https://github.com/cmyolo441-coder/perfectagent"><img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20Termux-50fa7b?style=flat-square" alt="platform"></a>
+  <a href="https://github.com/cmyolo441-coder/perfectagent/blob/main/pyproject.toml"><img src="https://img.shields.io/badge/pure--python-%23FFB86C?style=flat-square" alt="pure python"></a>
+  <a href="https://github.com/cmyolo441-coder/perfectagent"><img src="https://img.shields.io/github/stars/cmyolo441-coder/perfectagent?style=flat-square&color=f1fa8c" alt="stars"></a>
+  <a href="https://github.com/cmyolo441-coder/perfectagent/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-6272a4?style=flat-square" alt="license"></a>
+</p>
+
+*`Event-Sourced Kernel` · `Goal Contracts` · `Persistent Crew` · `Self-Healing` · `Temporal Kernel` · `40+ Slash Commands` · `16 Tools` · `5 Providers`*
+
+<p>
+  <a href="#-install-binary--curl-one-liner"><b>Install</b></a> •
+  <a href="#-run"><b>Run</b></a> •
+  <a href="#-what-it-can-do"><b>Features</b></a> •
+  <a href="#-slash-commands"><b>Commands</b></a> •
+  <a href="#-layout"><b>Layout</b></a>
+</p>
+
+</div>
+
+---
+
+> **Banner Updated ✨ — naya FullAgent banner fir se banaya gaya hai!**  
+> Terminal `python main.py` chalate hi ab naya gradient ASCII banner + session info dikhega — aur GitHub README pe yahi banner sabse upar.
 
 ```
 ╭─ FullAgent ── model: MiMo v2.5 FREE ── effort: HIGH ── session a1b2c3d4 ─╮
@@ -18,6 +55,21 @@ works, the bottom border shows a live animated status:
 
 Tokens stream live above the box, tool calls appear as `⚙ name args` with
 `✓`/`✗` results, and each turn ends with a stats line (`2.3s · 512→87 tokens`).
+
+<details>
+<summary><b>🖼️ Terminal Banner Preview (after <code>python main.py</code>)</b></summary>
+
+```
+ ◆ FullAgent v3.1.0  ·  advanced terminal AI agent
+ event-sourced kernel · goal contracts · persistent crew · self-healing
+ ──────────────────────────────────────────────────────────────────
+ ❯ model  MiMo v2.5 FREE   effort  high   autonomy  L4   session  a1b2c3d4
+   / commands · Ctrl+T models · Ctrl+E effort · /crew background subagents
+```
+
+*Full ASCII (6-line) gradient banner dikhega jab terminal ≥80 cols wide ho, warna compact fallback.*
+
+</details>
 
 ## Install (binary — curl one-liner)
 
@@ -331,3 +383,13 @@ pure fold. These are real engineering tools, not estimates.
 | **cov.py** | Genuine line coverage, not an estimate: `sys.settrace` (the same hook `coverage.py` uses) records every executed line of the target while a subject runs, compared against executable lines derived from the AST. The trace only records — never alters control flow — and is always restored. | `/coverage` · tool `measure_coverage` |
 | **fuzz.py** | Property-based fuzzing: typed generators (int, str, list, dict, bytes) biased toward boundaries (0, -1, empty, huge, unicode), plus mutated inputs. Crashes are SHRUNK to a minimal reproducer — the difference between "it crashed somewhere" and "here is the smallest input that breaks it." Deterministic under a seed. | `/fuzz` · tool `fuzz_target` |
 | **mutate.py** | Mutation testing — answers what tests alone cannot: *can your tests actually catch bugs?* AST NodeTransformers generate real mutants (operator flips, condition negations, broken returns); the suite runs against each. Killed = suite caught it; survived = a real hole. Score = killed / (killed + survived). The original file is always restored. | `/mutate <file> <suite-cmd>` |
+
+---
+
+<div align="center">
+
+**FullAgent** — *Pure Python · Event-Sourced · Self-Healing*
+
+`python main.py` → banner · `~/.fullagent/config.json` → persistence · `FULLAGENT_HOME` → override
+
+</div>

@@ -3291,20 +3291,55 @@ class UI:
 
     def print_banner(self) -> None:
         from . import __version__
-        width = min(shutil.get_terminal_size((100, 24)).columns - 2, 78)
+        term_w = shutil.get_terminal_size((100, 24)).columns
+        width = min(term_w - 2, 84)
         model = self._model()
         effort = self._effort()
 
-        logo = Text()
-        logo.append("◆ ", style=f"bold {C['accent']}")
-        logo.append(APP_NAME, style=f"bold {C['accent']}")
-        logo.append(f" v{__version__}", style=f"bold {C['pink']}")
-        logo.append("  ·  advanced terminal AI agent", style=C["dim"])
-        logo.append("\n")
-        logo.append("event-sourced kernel · goal contracts · persistent crew · "
-                    "self-healing", style=C["dim"])
-        self.console.print(Panel(logo, width=width,
-                                 border_style=C["border"], padding=(0, 1)))
+        # ── FullAgent ASCII banner (6-line block, dracula gradient) ──
+        # Compact width ~69-72 fits safely in 80-col consoles (inner 76).
+        # On narrow terminals (<78) fall back to single-line logo to avoid wrap.
+        ascii_lines = [
+            "███████╗██╗   ██╗██╗    ██╗    █████╗  ██████╗ ███████╗███╗ ██╗████████╗",
+            "██╔════╝██║   ██║██║    ██║   ██╔══██╗██╔════╝ ██╔════╝████╗██║╚══██╔══╝",
+            "█████╗  ██║   ██║██║    ██║   ███████║██║  ███╗█████╗  ██╔██╗██║  ██║   ",
+            "██╔══╝  ██║   ██║██║    ██║   ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║  ██║   ",
+            "██║     ╚██████╔╝██████╗█████╗██║  ██║╚██████╔╝███████╗██║ ╚████║  ██║   ",
+            "╚═╝      ╚═════╝ ╚═════╝╚════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝  ╚═╝   ",
+        ]
+        accent_styles = [C["accent"], C["accent"], C["pink"], C["cyan"], C["cyan"], C["pink"]]
+
+        # effective console width may be smaller than term_w (Panel caps to console width)
+        # so be conservative: need inner width >= max ascii length + 4
+        max_ascii = max(len(s) for s in ascii_lines)
+        need_width = max_ascii + 4 + 2  # borders + padding
+        if width >= max(78, need_width):
+            banner = Text()
+            for i, line in enumerate(ascii_lines):
+                banner.append(line.rstrip(), style=f"bold {accent_styles[i % len(accent_styles)]}")
+                banner.append("\n")
+            # tagline + feature stripe under the ascii (kept ≤74 chars to avoid Panel wrap)
+            banner.append("  ◆ FullAgent ", style=f"bold {C['accent']}")
+            banner.append(f"v{__version__}", style=f"bold {C['pink']}")
+            banner.append("  ·  Event-Sourced Kernel  ·  Goal Contracts  ·  Crew", style=C["dim"])
+            banner.append("\n")
+            banner.append("  ⚡ 40+ Commands · 16 Tools · 5 Providers · Real-time Web · Self-Healing", style=C["dim"])
+            self.console.print(Panel(banner, width=width,
+                                     border_style=C["border"], padding=(0, 1),
+                                     title=f"[bold {C['accent']}]FullAgent[/]",
+                                     subtitle=f"[dim]session {self.agent.session_id}[/]"))
+        else:
+            # narrow fallback — original compact logo (never wraps)
+            logo = Text()
+            logo.append("◆ ", style=f"bold {C['accent']}")
+            logo.append(APP_NAME, style=f"bold {C['accent']}")
+            logo.append(f" v{__version__}", style=f"bold {C['pink']}")
+            logo.append("  ·  advanced terminal AI agent", style=C["dim"])
+            logo.append("\n")
+            logo.append("event-sourced kernel · goal contracts · persistent crew · "
+                        "self-healing", style=C["dim"])
+            self.console.print(Panel(logo, width=width,
+                                     border_style=C["border"], padding=(0, 1)))
 
         line = Text()
         line.append(" ❯ model  ", style=C["dim"])
