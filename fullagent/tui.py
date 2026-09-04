@@ -65,6 +65,8 @@ from rich.text import Text
 
 from . import config
 from .agent import Agent, ToolEvent
+from .supercomputer import SupercomputerError
+from .systemprompt import SUPER_SPECIALTIES
 from .config import (
     APP_NAME,
     EFFORTS,
@@ -154,6 +156,55 @@ STYLE = Style.from_dict({
 
 EFFORT_COLORS = {e.key: e.color for e in EFFORTS}
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+# Small talk that must NEVER become an 8-core mission: a greeting
+# answered by 8 parallel cores costs lakhs of tokens and minutes.
+_SMALL_TALK = frozenset({
+    "hello", "hi", "hey", "hii", "helo", "hello!", "hi!", "hey!",
+    "namaste", "namaste!", "salaam", "good morning", "good afternoon",
+    "good evening", "good night", "thanks", "thank you", "thankyou",
+    "thanks!", "thank you!", "shukriya", "ok", "okay", "ok!", "k",
+    "bye", "goodbye", "see you", "welcome", "congrats", "congratulations",
+    "great", "nice", "cool", "awesome", "perfect", "got it", "understood",
+    "hmm", "hmm?", "really?", "seriously?", "wow", "oh", "ohh", "acha",
+    "accha", "samajh gaya", "theek hai", "theek", "haan", "haan ji",
+    "yes", "no", "nahi", "nahin", "sorry", "sorry!", "my bad",
+    "kaise ho", "how are you", "how are you?", "kya haal hai",
+    "kya ho raha hai", "kya horaha hai", "kya chal raha hai",
+    "kya kar rahe ho", "aur batao", "kya scene hai", "sab badhiya",
+    "badia", "mast", "all good",
+    "what's up", "whats up", "sup", "yo", "test", "testing", "ping",
+})
+
+
+def _is_small_talk(text: str) -> bool:
+    """Greetings/thanks/one-word reactions → cheap single reply.
+
+    Only matches short messages with no mission content: under 30
+    chars, no file paths, no code, no question words asking for work.
+    Real short tasks ("count files", "fix bug") still become missions.
+    Typo-tolerant (Hinglish spacings like "kya hor aha hai") via a
+    spaceless fuzzy match — threshold kept high so real tasks never
+    get swallowed.
+    """
+    t = text.strip().lower()
+    if not t or len(t) > 30:
+        return False
+    if any(ch in t for ch in ("/", "\\", ".py", ".js", ".ts", "{", "}",
+                              ";", "=", "(", "import ")):
+        return False
+    if t in _SMALL_TALK:
+        return True
+    squashed = t.replace(" ", "")
+    if len(squashed) < 6:
+        return False
+    for s in _SMALL_TALK:
+        packed = s.replace(" ", "")
+        if abs(len(squashed) - len(packed)) > 3:
+            continue
+        if difflib.SequenceMatcher(None, squashed, packed).ratio() >= 0.85:
+            return True
+    return False
 
 # ---------------------------------------------------------------------------
 # Rich markdown rendering tweaks (used for non-streamed output)
@@ -291,6 +342,8 @@ SLASH_COMMANDS = [
     ("/coverage", "line-coverage ledger — last measured runs"),
     ("/fuzz", "fuzzing ledger — runs, crashes, shrunk reproducers"),
     ("/mutate", "mutation testing — /mutate <file> <suite-command>"),
+    ("/on", "SUPERCOMPUTER — boot 8 parallel cores; /on <mission> runs it"),
+    ("/off", "power the supercomputer down"),
     ("/help", "commands and key bindings"),
     ("/clear", "clear the screen"),
     ("/new", "fresh conversation"),
@@ -593,6 +646,13 @@ class UI:
         self._ctx_cache: int | None = None
         self._ctx_cache_ts = 0.0
 
+        # SUPERCOMPUTER live board: /on flips super mode, so a plain
+        # message becomes a mission for all 8 cores. The paint throttle
+        # keeps a 4 GB box from redrawing an unchanged screen.
+        self._super_mode = False
+        self._super_last = ""
+        self._super_last_paint = 0.0
+
         self._build()
 
     # -- small helpers ---------------------------------------------------------
@@ -676,6 +736,15 @@ class UI:
         if self._focus_remaining > 0:
             segs.append((f" 🎯 focus×{self._focus_remaining} ",
                          "class:box.flash"))
+        # SUPERCOMPUTER indicator — live core count, always visible when on
+        try:
+            sc = self.agent.supercomputer
+            if sc.online:
+                live = sum(1 for c in sc.cores
+                           if c.state in ("thinking", "tool"))
+                segs.append((f" 🖥 {live}/{sc.n} ", "class:box.tag"))
+        except Exception:
+            pass
         # live context usage — cached 1s (the border redraws every frame)
         if self._ctx_cache is None or now - self._ctx_cache_ts > 1.0:
             try:
@@ -712,6 +781,17 @@ class UI:
         frags.append(("class:box", "─" * fill + "╮"))
         return frags
 
+    def _super_busy(self) -> bool:
+        """True while the 8-core machine runs a mission (cheap lock check).
+
+        Normal turns set self._busy, but supercomputer missions run on a
+        background thread — without this the prompt box would look idle
+        while 8 cores work."""
+        try:
+            return bool(self.agent.supercomputer.busy)
+        except Exception:  # noqa: BLE001 — box render must never fail
+            return False
+
     def _bottom_fragments(self) -> list:
         width = self._width()
         inner = width - 2
@@ -723,10 +803,14 @@ class UI:
                      ("class:box", "─" * max(0, inner - len(bar)) + "╯")]
                     + self._approve_args_line(tool, self._approve_request[1]))
 
-        if self._busy:
+        if self._busy or self._super_busy():
+            # one smooth spinner source: _spinner_i advances at 11 fps
+            # via the pump (normal turns and super missions alike)
             frame = SPINNER_FRAMES[self._spinner_i]
             max_status = max(0, inner - len(" ⠹  ·  Esc/Ctrl+C cancel ") - 4)
             status = self._status_text[:max_status]
+            if not self._busy and not status.startswith("🖥"):
+                status = f"🖥 {status}" if status else "🖥 supercomputer working…"
             bar = f" {frame} {status}  ·  Esc/Ctrl+C cancel "
             return [("class:box", "╰"),
                     ("class:box.spinner", f" {frame} "),
@@ -1050,6 +1134,27 @@ class UI:
         if text.startswith("/"):
             self._handle_slash(text)
             return
+        # SUPERCOMPUTER mode: while the machine is on, a plain message is
+        # a MISSION for all eight cores, not a single-agent turn —
+        # EXCEPT small talk: greetings/thanks/etc. get a cheap single
+        # reply instead of burning lakhs of tokens on "hello".
+        if self._super_mode and self.agent.supercomputer.online:
+            if self.agent.supercomputer.busy:
+                self._set_flash("mission running — /on stop to abort",
+                                C["yellow"])
+                return
+            if self._busy:
+                # a small-talk reply is still streaming — never overlap
+                self._set_flash("busy — wait for the reply (Ctrl+C to "
+                                "cancel)", C["yellow"])
+                return
+            self._emit_user(text)
+            if _is_small_talk(text):
+                threading.Thread(target=self._run_turn_thread, args=(text,),
+                                 daemon=True).start()
+            else:
+                self._super_launch(text)
+            return
         if self._busy:
             # a turn is already running — never overlap two agent loops
             self._set_flash("busy — wait for the current turn (Ctrl+C to "
@@ -1076,6 +1181,13 @@ class UI:
             self.print_info(f"bye — session {self.agent.session_id} saved",
                             C["dim"])
             self.agent.save_session()
+            try:
+                # stop the 8-core pool first: otherwise the interpreter
+                # hangs in ThreadPoolExecutor join on exit (the
+                # KeyboardInterrupt traceback on shutdown).
+                self.agent.supercomputer.shutdown()
+            except Exception:  # noqa: BLE001 — exit must never fail
+                pass
             self.app.exit()
         elif cmd == "/new":
             self.agent.reset()
@@ -1263,6 +1375,10 @@ class UI:
             self.print_info(self.agent.fuzzer.format_status(), C["yellow"])
         elif cmd == "/mutate":
             self._cmd_mutate(arg)
+        elif cmd == "/on":
+            self._cmd_on(arg)
+        elif cmd == "/off":
+            self._cmd_off()
         elif cmd == "/about":
             from . import __version__
             self.print_info(f"{APP_NAME} v{__version__} — advanced terminal "
@@ -2561,6 +2677,252 @@ class UI:
                      border_style=C["accent"], expand=False,
                      padding=(0, 1))
 
+    # -- SUPERCOMPUTER: /on — 8 cores, live board ---------------------------------
+
+    # Live-board helpers: one spinner + one wall clock shared by the
+    # status line and the board header, so "live" seconds tick in the
+    # cheap status line (1 invalidate/sec) instead of a full panel
+    # reprint per core-step (which spammed the scrollback).
+    _SUPER_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    @staticmethod
+    def _super_spin() -> str:
+        return UI._SUPER_SPINNER[int(time.time() * 8)
+                                 % len(UI._SUPER_SPINNER)]
+
+    @staticmethod
+    def _super_clock() -> str:
+        # local wall time + short zone, e.g. "14:32:11 IST" (Windows
+        # reports the full "India Standard Time", so abbreviate it)
+        zone = time.strftime("%Z")
+        if len(zone) > 5:
+            zone = "".join(w[0] for w in zone.split() if w and w[0].isupper())
+        return f"{time.strftime('%H:%M:%S')} {zone}".strip()
+
+    def _cmd_on(self, arg: str) -> None:
+        """/on              boot the machine (then just type your mission)
+        /on <mission>       boot and launch the mission immediately
+        /on status          the live board once
+        /on report          the last mission report
+        /on stop            abort the running mission"""
+        sc = self.agent.supercomputer
+        sub = arg.strip()
+        low = sub.lower()
+
+        if low == "status":
+            self.print_info(sc.format_status(), C["cyan"])
+            return
+        if low == "report":
+            self.print_info(sc.format_report(), C["cyan"])
+            return
+        if low == "stop":
+            self.print_info(sc.stop(), C["yellow"])
+            return
+
+        if not sc.online:
+            self.agent.sync_supercomputer()
+            sc.on_update = self._super_tick
+            self.print_info(sc.boot(), C["green"])
+            self.console.print(self._super_boot_panel())
+            self._super_mode = True
+        if not sub:
+            self.print_info(
+                "supercomputer is ONLINE — type your mission as a normal "
+                "message and all 8 cores take it. /off powers down.",
+                C["dim"])
+            return
+        self._super_launch(sub)
+
+    def _cmd_off(self) -> None:
+        sc = self.agent.supercomputer
+        self._super_mode = False
+        self.print_info(sc.shutdown(), C["yellow"])
+
+    def _super_boot_panel(self) -> Panel:
+        sc = self.agent.supercomputer
+        body = Text()
+        body.append("EIGHT CORES ONLINE — parallel mission machine\n\n",
+                    style=f"bold {C['green']}")
+        for core in sc.cores:
+            spec = SUPER_SPECIALTIES.get(core.callsign, "")
+            body.append(f"  ◈ {core.callsign:<7}", style=f"bold {C['cyan']}")
+            body.append(f"{spec}\n", style=C["dim"])
+        body.append("\nPIPELINE  ", style=f"bold {C['fg']}")
+        body.append("recon → relay(v1→v8) ∥ deepdive → fuse → build×8 → "
+                    "verify×8 ⇄ repair×8\n", style=C["accent"])
+        body.append("Type your mission. /on stop aborts · /off powers down.",
+                    style=C["dim"])
+        return Panel(body, title="🖥  SUPERCOMPUTER", border_style=C["accent"],
+                     expand=False, padding=(0, 1))
+
+    def _super_launch(self, objective: str) -> None:
+        """Run a mission on a worker thread; the board paints live."""
+        sc = self.agent.supercomputer
+        if sc.busy:
+            self.print_error("a mission is already running — /on stop "
+                             "aborts it")
+            return
+        self.agent.sync_supercomputer()
+        sc.on_update = self._super_tick
+        self._super_last_phase = ""
+        self._super_last_summary = None
+        self._super_last_board = 0.0
+        self.print_info(f"🚀 MISSION: {objective}", C["pink"])
+
+        def ticker():
+            # Cheap 1 Hz heartbeat while the mission runs: only the
+            # status line (spinner + wall clock + elapsed seconds) is
+            # refreshed — no full board reprint, no scrollback spam.
+            while sc.busy:
+                try:
+                    self._super_clock_tick()
+                except Exception:  # noqa: BLE001
+                    pass
+                time.sleep(1.0)
+
+        def run():
+            # smooth spinner: the same 11 fps pump normal turns use.
+            # (Time-based frames stuttered — pings arrive in bursts with
+            # dead gaps during long model calls.)
+            self._start_spinner()
+            try:
+                threading.Thread(target=ticker, daemon=True).start()
+                sc.run_mission(objective)
+            except SupercomputerError as e:
+                self.print_error(str(e))
+                return
+            finally:
+                self._stop_spinner()
+            self._super_paint(force=True)
+            self.console.print(self._super_report_panel())
+            self._set_status("")
+
+        self._bg(run)
+
+    def _super_tick(self) -> None:
+        """Called by the machine on every state change — cheap, throttled."""
+        try:
+            self._super_paint()
+        except Exception:  # noqa: BLE001 — painting never breaks a mission
+            pass
+
+    def _super_clock_tick(self) -> None:
+        """1 Hz heartbeat: wall clock + elapsed seconds.
+
+        Only touches the cheap status line (one invalidate), so the
+        seconds visibly tick without reprinting the board. The spinner
+        itself lives in the prompt-box frame (11 fps pump), not here —
+        a baked-in char would stutter between pings."""
+        sc = self.agent.supercomputer
+        snap = sc.snapshot()
+        live = sum(1 for c in snap["cores"]
+                   if c["state"] in ("thinking", "tool"))
+        self._status_text = (
+            f"🖥 {snap['phase'] or 'boot'}"
+            + (f" r{snap['round']}" if snap["round"] else "")
+            + f" · {live}/{len(snap['cores'])} live"
+            + f" · {snap['elapsed']:.0f}s · {self._super_clock()}")
+        self._invalidate()
+
+    def _super_paint(self, force: bool = False) -> None:
+        """Update the live view without spamming the scrollback.
+
+        Full board panels print on phase change, and (throttled to one
+        per ~4s) when the core-state summary changes — e.g. idle burst
+        → all thinking → first completions. So the recon board never
+        sits frozen on standby, but we still print a handful of panels
+        per mission instead of dozens. Per-second liveness ticks in the
+        cheap status line via _super_clock_tick."""
+        sc = self.agent.supercomputer
+        snap = sc.snapshot()
+        live = sum(1 for c in snap["cores"]
+                   if c["state"] in ("thinking", "tool"))
+        self._set_status(
+            f"🖥 {snap['phase'] or 'boot'}"
+            + (f" r{snap['round']}" if snap["round"] else "")
+            + f" · {live}/{len(snap['cores'])} cores live · "
+              f"v{snap['plan_version']} · {snap['files']}f · "
+              f"{snap['defects']}d · {snap['tokens']:,}tok"
+              f" · {snap['elapsed']:.0f}s · {self._super_clock()}")
+        if force or snap["phase"] != getattr(self, "_super_last_phase", ""):
+            self._super_last_phase = snap["phase"]
+            self._super_last_summary = None
+            self._super_last_board = time.time()
+            self.console.print(self._super_board(snap))
+            return
+        summary = (live,
+                   sum(1 for c in snap["cores"] if c["state"] == "done"),
+                   sum(1 for c in snap["cores"]
+                       if c["state"] in ("error", "blocked", "cancelled")),
+                   snap["findings"], snap["files"])
+        if (summary != getattr(self, "_super_last_summary", None)
+                and time.time() - getattr(self, "_super_last_board",
+                                           0.0) >= 4.0):
+            self._super_last_summary = summary
+            self._super_last_board = time.time()
+            self.console.print(self._super_board(snap))
+
+    def _super_board(self, snap: dict) -> Panel:
+        """The live-TV panel: one row per core, exactly what it is doing."""
+        glyphs = {"done": ("✓", C["green"]), "error": ("✗", C["red"]),
+                  "blocked": ("◐", C["yellow"]), "tool": ("⚙", C["orange"]),
+                  "thinking": ("◉", C["cyan"]), "idle": ("·", C["dim"]),
+                  "cancelled": ("⊘", C["dim"])}
+        body = Text()
+        if snap.get("objective"):
+            body.append(f"mission: {snap['objective'][:90]}\n",
+                        style=f"bold {C['fg']}")
+        body.append(f"phase {snap['phase'] or '—'}", style=f"bold {C['pink']}")
+        if snap["round"]:
+            body.append(f"  round {snap['round']}", style=C["yellow"])
+        body.append(f"  ·  plan v{snap['plan_version']}"
+                    f"  ·  findings {snap['findings']}"
+                    f"  ·  sources {snap['sources']}"
+                    f"  ·  files {snap['files']}"
+                    f"  ·  defects {snap['defects']}"
+                    f"  ·  {snap['tokens']:,} tok"
+                    f"  ·  {snap['elapsed']:.0f}s\n\n", style=C["dim"])
+        tick = int(time.time() * 8)
+        for ci, c in enumerate(snap["cores"]):
+            glyph, color = glyphs.get(c["state"], ("?", C["dim"]))
+            body.append(f" {glyph} ", style=f"bold {color}")
+            body.append(f"{c['callsign']:<7}", style=f"bold {C['fg']}")
+            body.append(f"{c['state']:<9}", style=color)
+            if c["tool"]:
+                body.append(f"{c['tool']:<14}", style=C["orange"])
+            else:
+                body.append(" " * 14)
+            if c["state"] in ("thinking", "tool"):
+                # per-core live spinner, offset per row so the 8
+                # spinners don't move in lockstep
+                spin = SPINNER_FRAMES[(tick + ci * 2)
+                                      % len(SPINNER_FRAMES)]
+                body.append(f"{spin} ", style=f"bold {color}")
+                body.append(f"{c['activity'][:50]:<50}", style=C["fg"])
+            else:
+                body.append(f"  {c['activity'][:50]:<50}", style=C["fg"])
+            body.append(f" {c['steps']:>2}s {c['elapsed']:>5.0f}s\n",
+                        style=C["dim"])
+        if snap["board"]:
+            body.append("\n")
+            for line in snap["board"][-4:]:
+                body.append(f" › {line[:96]}\n", style=C["cyan"])
+        spin = self._super_spin() if snap["status"] == "running" else "■"
+        return Panel(body, title=f"🖥  SUPERCOMPUTER — LIVE {spin} "
+                                 f"{snap['elapsed']:.0f}s · "
+                                 f"{self._super_clock()}",
+                     border_style=C["accent"], expand=False, padding=(0, 1))
+
+    def _super_report_panel(self) -> Panel:
+        sc = self.agent.supercomputer
+        m = sc.mission
+        body = Text(sc.format_report(), style=C["fg"])
+        color = (C["green"] if m and m.status == "complete"
+                 else C["yellow"] if m and m.status == "stopped"
+                 else C["red"])
+        return Panel(body, title="🖥  MISSION REPORT", border_style=color,
+                     expand=False, padding=(0, 1))
+
     def _cmd_council(self, arg: str) -> None:
         """Convene an adversarial debate: /council <proposition>."""
         question = arg.strip()
@@ -3218,6 +3580,10 @@ class UI:
                     f' <style color="{C["dim"]}">{desc}</style>', "")
 
         items = [
+            row("/on", "SUPERCOMPUTER — boot 8 parallel cores"),
+            row("/on <mission>", "run a full mission across all 8 cores"),
+            row("/on status|report|stop", "live board · report · abort"),
+            row("/off", "power the supercomputer down"),
             row("/model", "select model (PgUp/PgDn/Tab to navigate)"),
             row("/effort", "low · medium · high · extrahigh · ultrahigh"),
             row("/goal", "set · prove · close · status · waive · clear"),
@@ -3287,6 +3653,10 @@ class UI:
                 self.print_info("⊘ no interactive terminal — run fullagent "
                                 "in a real TTY, or use headless commands "
                                 "(python main.py --help)", C["yellow"])
+        try:
+            self.agent.supercomputer.shutdown()
+        except Exception:  # noqa: BLE001 — exit must never fail
+            pass
         self.agent.save_session()
 
     def print_banner(self) -> None:

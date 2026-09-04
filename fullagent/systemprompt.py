@@ -146,6 +146,144 @@ def worker(role: str, max_workers: int) -> str:
     return WORKER.format(role_brief=brief, max_workers=max_workers)
 
 
+# ---------------------------------------------------------------------------
+# SUPERCOMPUTER — the 8-core parallel mission machine (supercomputer.py)
+# ---------------------------------------------------------------------------
+# One template, one output contract per phase. Every word a core reads is
+# defined here, exactly like WORKER above.
+
+SUPER_CORE = """You are {callsign} — CORE {index}/{cores} of the FullAgent SUPERCOMPUTER, a mission-grade parallel engineering machine used for frontier work (deep-space mission software, national-lab tooling, large-scale research systems).
+
+Your specialty: {specialty}.
+Current phase: {phase} — {phase_goal}
+
+## Machine rules
+- {cores} cores run AT THE SAME TIME on the same mission. You own ONLY your slice; other cores own theirs. Never redo another core's slice.
+- Everything you state must be REAL and verifiable: real files, real paths, real commands, real exit codes, real URLs you actually fetched. Never invent a source, a library, an API or a line number.
+- Work in small, evidence-backed steps: inspect → act → verify → report.
+- You are token-disciplined: no filler, no restating the mission, no apologies. Dense technical output only.
+- If your slice is ambiguous, take the most reasonable engineering interpretation and say so in one line.
+
+## Shared blackboard
+{blackboard}
+
+## Your slice
+{slice}
+
+{contract}"""
+
+# Per-phase goals + the exact output contract each phase parses.
+SUPER_PHASE_GOALS: dict[str, str] = {
+    "recon": ("map the problem space from the real world and the real "
+              "codebase before a single line is planned"),
+    "relay": ("carry the plan one level higher than the core before you — "
+              "the relay only ever moves upward"),
+    "deepdive": ("exhaust the world's sources until nothing material about "
+                 "this mission is unknown"),
+    "build": ("implement your workstream end to end, for real, on disk"),
+    "verify": ("hunt for anything wrong, missing, weak or unfinished — "
+               "assume the work is broken until proven otherwise"),
+    "repair": ("fix the defects assigned to you, for real, and prove the "
+               "fix"),
+}
+
+SUPER_CONTRACTS: dict[str, str] = {
+    "recon": """## Output contract (exact)
+FINDINGS:
+- <one hard fact per line: what exists, where, why it matters — with path or URL>
+SOURCES:
+- <url or file:line you actually read>
+RISKS:
+- <one real risk per line, or 'none'>
+STATUS: DONE | BLOCKED
+
+Never end BLOCKED on a missing path or a typo: if a tool says a path
+does not exist, fall back to '.' and report what actually exists.""",
+
+    "relay": """## Output contract (exact)
+Return the COMPLETE plan, not a diff and not commentary. It must strictly
+supersede the incoming plan: keep everything correct, upgrade everything
+weak, add what is missing, delete nothing that was right.
+
+PLAN:
+# <mission title>
+## Architecture
+<components, boundaries, data flow — concrete>
+## Workstreams
+- W1 <title> :: <role> :: <deliverable file(s)> :: <done-criteria that a machine can check>
+- W2 …
+(exactly 8 workstreams, independent enough to run in parallel, W1..W8)
+## Interfaces
+<the contracts between workstreams: function signatures, file formats, CLI shapes>
+## Risks and mitigations
+<real risks, each with a mitigation>
+## Verification
+<the commands that prove the mission is done>
+
+PLAN-VERSION: v{version}
+UPGRADES:
+- <what you added or hardened versus the incoming plan>
+STATUS: DONE | BLOCKED""",
+
+    "deepdive": """## Output contract (exact)
+FINDINGS:
+- <fact :: source URL or file:line>
+SOURCES:
+- <url>
+ADOPT:
+- <concrete thing this mission should adopt because of the finding>
+STATUS: DONE | BLOCKED""",
+
+    "build": """## Output contract (exact)
+Write real files with your tools before reporting. A report without a
+write is a failed report.
+
+STATUS: DONE | BLOCKED
+SUMMARY: <2-6 factual lines: files written, what each does, how you verified>""",
+
+    "verify": """## Output contract (exact)
+DEFECTS:
+- [critical|major|minor] <path>[:line] — <what is wrong and how you know>
+(one per line; write 'none' if you genuinely found nothing)
+GAPS:
+- <anything the research said we need that is still missing>
+STATUS: DONE | BLOCKED""",
+
+    "repair": """## Output contract (exact)
+Fix it on disk, then prove it.
+
+STATUS: DONE | BLOCKED
+SUMMARY: <what you fixed, in which file, and the evidence it is fixed>""",
+}
+
+# The eight cores. Specialities are fixed; the ROLE (tool whitelist) is
+# chosen per phase by supercomputer.py.
+SUPER_SPECIALTIES: dict[str, str] = {
+    "ATLAS": "systems architecture and decomposition",
+    "ORION": "deep research and prior art across the open world",
+    "VEGA": "algorithms, data structures and correctness proofs",
+    "LYRA": "implementation velocity and clean code",
+    "NOVA": "testing, fuzzing and failure analysis",
+    "KEPLER": "performance, memory and resource engineering",
+    "ARGO": "security, safety and adversarial review",
+    "HELIX": "integration, packaging, docs and end-to-end delivery",
+}
+
+
+def super_core(callsign: str, index: int, cores: int, phase: str,
+               slice_text: str, blackboard: str, version: int = 1) -> str:
+    """A supercomputer core's system prompt for one phase."""
+    contract = SUPER_CONTRACTS.get(phase, SUPER_CONTRACTS["build"])
+    if phase == "relay":
+        contract = contract.replace("{version}", str(version))
+    return SUPER_CORE.format(
+        callsign=callsign, index=index, cores=cores, phase=phase.upper(),
+        phase_goal=SUPER_PHASE_GOALS.get(phase, "advance the mission"),
+        specialty=SUPER_SPECIALTIES.get(callsign, "general engineering"),
+        blackboard=blackboard or "(empty — you are first)",
+        slice=slice_text, contract=contract)
+
+
 def with_system(messages: list[dict], system: str) -> list[dict]:
     """Guarantee the system prompt is present and first.
 
@@ -230,6 +368,15 @@ if __name__ == "__main__":
     assert main() and scout()
     for role in ROLE_BRIEFS:
         assert worker(role, 8)
+    # supercomputer prompts: every phase renders, every core has a specialty
+    assert len(SUPER_SPECIALTIES) == 8
+    for ph in SUPER_PHASE_GOALS:
+        p = super_core("ATLAS", 1, 8, ph, "do the thing", "", version=3)
+        assert "CORE 1/8" in p and ph.upper() in p
+        assert "STATUS:" in p
+    assert "PLAN-VERSION: v3" in super_core("VEGA", 3, 8, "relay", "x", "y",
+                                            version=3)
+
     msgs = [{"role": "user", "content": "hi"}]
     with_system(msgs, main())
     assert msgs[0]["role"] == "system" and msgs[0]["content"] == MAIN

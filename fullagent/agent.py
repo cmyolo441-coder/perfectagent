@@ -81,6 +81,7 @@ from .semantic import SemanticMemory
 from .skills import SkillForge
 from .snapshots import SnapshotStore
 from .speculate import Speculator, SPECULATIVE_TOOLS
+from .supercomputer import Supercomputer, SupercomputerError
 from .race import RacingUniverses
 from .synth import ProgramSynthesizer, SynthSpec, default_generator
 from .taint import StaticAnalyzer
@@ -278,6 +279,12 @@ class Agent:
         self.fabric = KnowledgeFabric(self.log)
         self.crew = Crew(self.log, self.provider, self.model, self.effort,
                          mastermind=self.mastermind)
+        # SUPERCOMPUTER (/on): 8 cores that think at the same time on one
+        # mission. Constructed cold — no threads until a mission boots, so
+        # an unused machine costs nothing on a small box.
+        self.supercomputer = Supercomputer(
+            self.log, self.provider, self.model, self.effort,
+            registry=self.tools)
         self.autopilot = AutoPilot(self.log)
         self.nexus = Nexus()
         self.forge = Forge(self.log)
@@ -334,6 +341,7 @@ class Agent:
         self._register_code_tools()
         self._register_v4_tools()
         self._register_crew_tools()
+        self._register_super_tools()
         self._register_advanced_tools()
         self._register_persisted_skills()
 
@@ -1908,6 +1916,59 @@ class Agent:
             "error / closed).",
             {"type": "object", "properties": {}, "required": []},
             crew_status)
+
+    # -- supercomputer: the 8-core mission machine ------------------------------
+
+    def sync_supercomputer(self) -> None:
+        """Point the machine at the CURRENT model/effort (both can change
+        mid-session via /model and /effort)."""
+        sc = self.supercomputer
+        sc.provider, sc.model, sc.effort = self.provider, self.model, \
+            self.effort
+
+    def _register_super_tools(self) -> None:
+        """Expose the supercomputer to the model itself, so it can hand a
+        big mission to all eight cores instead of grinding alone."""
+        sc = self.supercomputer
+
+        def supercomputer_run(objective: str) -> str:
+            objective = str(objective or "").strip()
+            if not objective:
+                return "ERROR: objective must be a non-empty string"
+            self.sync_supercomputer()
+            self._push_status("🖥 supercomputer · booting 8 cores")
+            try:
+                mission = sc.run_mission(objective)
+            except SupercomputerError as e:
+                return f"ERROR: {e}"
+            return sc.format_report() + (
+                f"\n\nMASTER PLAN v{mission.plan_version}:\n"
+                f"{mission.plan[:4000]}")
+
+        def supercomputer_status() -> str:
+            return sc.format_status()
+
+        self.tools["supercomputer_run"] = Tool(
+            "supercomputer_run",
+            "Hand a BIG mission to the 8-core supercomputer. All eight "
+            "cores run AT THE SAME TIME: parallel recon, a plan relay that "
+            "escalates v1→v8, a parallel deep dive across GitHub/GitLab/"
+            "registries/docs/papers, one fused master plan, eight parallel "
+            "build workstreams, then adversarial verify↔repair rounds "
+            "until the board is clean. Use for large end-to-end projects, "
+            "not small edits.",
+            {"type": "object", "properties": {
+                "objective": {"type": "string",
+                              "description": "the full mission in one "
+                                             "sentence or paragraph"}},
+                "required": ["objective"]},
+            supercomputer_run, risk=RISK_CONFIRM)
+        self.tools["supercomputer_status"] = Tool(
+            "supercomputer_status",
+            "Show the supercomputer's live board: every core's state, the "
+            "current phase and the mission counters.",
+            {"type": "object", "properties": {}, "required": []},
+            supercomputer_status)
 
     # -- v3 subsystem callbacks ------------------------------------------------
 

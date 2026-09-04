@@ -14,6 +14,12 @@ Package layout:
     team.py         shared subagent substrate: roles, reports, write lock
     crew.py         persistent Codex-style subagents (spawn/send/wait/
                     close/resume) — SERIAL execution, one agent at a time
+    supercomputer.py the /on machine: EIGHT cores running at the same
+                    time on one mission — parallel recon, an escalating
+                    plan relay (v1→v8), a world-wide deep dive, a fused
+                    master plan, 8 parallel build workstreams, then
+                    adversarial verify⇄repair rounds until the board is
+                    clean. Event-sourced, bounded-memory, live board.
     workflows.py    saved multi-step pipelines — phased orchestration
     report.py       enterprise audit export (md/html) + forecasting
     autopilot.py    self-routing brain: auto-enables goal / web
