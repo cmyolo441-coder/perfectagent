@@ -1,4 +1,4 @@
-> **New in v3.2: `/on` live computer mode** — eight concurrent API-backed specialists, shared planning, owned-file writes, real command output, approval gates, bounded repair and recovery. Start with [COMPUTER_MODE.md](COMPUTER_MODE.md); see [VERIFICATION.md](VERIFICATION.md) for actual test scope. The legacy Crew stays serial. API keys ship as built-in defaults so the app works out of the box; your own environment variables always take precedence. Published GitHub release with single-file binaries: [v3.2.1](https://github.com/cmyolo441-coder/perfectagent/releases/tag/v3.2.1).
+> **New in v3.2.3: rebuilt Linux x64 binary** — the previous release binary was removed and a fresh single-file `fullagent-linux-x64` was built from current source and published as [v3.2.3](https://github.com/cmyolo441-coder/perfectagent/releases/tag/v3.2.3). v3.2 still includes `/on` live computer mode: eight concurrent API-backed specialists, shared planning, owned-file writes, real command output, approval gates, bounded repair and recovery. Start with [COMPUTER_MODE.md](COMPUTER_MODE.md); see [VERIFICATION.md](VERIFICATION.md) for actual test scope. The legacy Crew stays serial. API keys ship as built-in defaults so the app works out of the box; your own environment variables always take precedence.
 
 <div align="center">
 
@@ -11,7 +11,7 @@
 ╚═╝      ╚═════╝ ╚═════╝╚════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝  ╚═╝
 ```
 
-<h1>FullAgent <sup><code>v3.2.0</code></sup></h1>
+<h1>FullAgent <sup><code>v3.2.3</code></sup></h1>
 
 **Advanced Terminal AI Agent — Pure Python, Real Code, World-Class TUI**
 
@@ -62,7 +62,7 @@ Tokens stream live above the box, tool calls appear as `⚙ name args` with
 <summary><b>🖼️ Terminal Banner Preview (after <code>python main.py</code>)</b></summary>
 
 ```
- ◆ FullAgent v3.2.0  ·  advanced terminal AI agent
+ ◆ FullAgent v3.2.3  ·  advanced terminal AI agent
  event-sourced kernel · goal contracts · persistent crew · self-healing
  ──────────────────────────────────────────────────────────────────
  ❯ model  MiMo v2.5 FREE   effort  high   autonomy  L4   session  a1b2c3d4
@@ -75,19 +75,33 @@ Tokens stream live above the box, tool calls appear as `⚙ name args` with
 
 ## Install (binary — curl one-liner)
 
-Single-file binaries — no Python needed:
+Single-file binaries — no Python needed. **v3.2.3** ships a freshly rebuilt
+Linux x64 binary (the previous GitHub release binary was deleted and replaced):
 
 | Platform | Install |
 |---|---|
 | Linux x64 | `curl -fsSL https://raw.githubusercontent.com/cmyolo441-coder/perfectagent/main/install.sh \| bash` |
-| macOS (Apple Silicon) | download `fullagent-darwin-arm64` from the [latest release](https://github.com/cmyolo441-coder/perfectagent/releases/latest), `chmod +x`, move to /usr/local/bin |
-| Windows x64 | download `fullagent-windows-x64.exe`, rename to `fullagent.exe`, put on PATH |
+| Linux x64 (direct) | download [`fullagent-linux-x64`](https://github.com/cmyolo441-coder/perfectagent/releases/download/v3.2.3/fullagent-linux-x64), `chmod +x`, move to `/usr/local/bin` |
+| macOS (Apple Silicon) | download `fullagent-darwin-arm64` from the [latest release](https://github.com/cmyolo441-coder/perfectagent/releases/latest) when published, `chmod +x`, move to /usr/local/bin — otherwise use pip |
+| Windows x64 | download `fullagent-windows-x64.exe` when published, rename to `fullagent.exe`, put on PATH — otherwise use pip |
 | Termux (Android) | `curl -fsSL https://raw.githubusercontent.com/cmyolo441-coder/perfectagent/main/install-termux.sh \| bash` |
 | Any OS with Python 3.9+ | `pip install git+https://github.com/cmyolo441-coder/perfectagent.git` |
 
 `install.sh` grabs the latest release binary automatically and falls back to
-a pip install from source when no binary is published yet. Set `INSTALL_DIR`
+a pip install from source when no matching binary is published yet. Set `INSTALL_DIR`
 to install elsewhere (e.g. `INSTALL_DIR=$HOME/.local/bin curl -fsSL … | bash`).
+
+```bash
+# Linux x64 — one liner
+curl -fsSL https://raw.githubusercontent.com/cmyolo441-coder/perfectagent/main/install.sh | bash
+fullagent --version   # fullagent v3.2.3
+```
+
+v3.2.3 Linux x64 asset: [`fullagent-linux-x64`](https://github.com/cmyolo441-coder/perfectagent/releases/download/v3.2.3/fullagent-linux-x64) (15 MB)
+
+```
+SHA-256  8dcf0678ab3832af707a8669808a0ecff7f206d07f1300081ce8908e63fdf172
+```
 
 ## Run
 

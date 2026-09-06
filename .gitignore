@@ -6,5 +6,10 @@ venv/
 .DS_Store
 build/
 dist/
+# release binaries (published as GitHub release assets, never committed)
+fullagent-linux-x64
+fullagent-darwin-arm64
+fullagent-darwin-x64
+fullagent-windows-x64.exe
 .bg-shell/
 .gsd/

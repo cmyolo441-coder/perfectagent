@@ -128,7 +128,8 @@ class EntryPointTests(unittest.TestCase):
         self.assertIn('Eight-agent',r.stdout)
 
     def test_version_and_top_level_help(self):
-        r=self.call('--version');self.assertIn('3.2.0',r.stdout)
+        import fullagent
+        r=self.call('--version');self.assertIn(fullagent.__version__,r.stdout)
         r=self.call('--help');self.assertEqual(r.returncode,0);self.assertIn('computer --help',r.stdout)
 
     def test_doctor_reports_capability_without_model_calls(self):
