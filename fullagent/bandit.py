@@ -30,6 +30,9 @@ import re
 from dataclasses import dataclass
 
 from .kernel import EventLog
+from ._foundation import get_logger
+
+_log = get_logger("bandit")
 
 CONTEXTS = ("code", "write", "research", "run", "chat")
 _PRIOR = (1.0, 1.0)          # uniform Beta prior — no arm is presumed

@@ -31,6 +31,9 @@ import time
 from dataclasses import dataclass, field
 
 from .kernel import EventLog
+from ._foundation import get_logger
+
+_log = get_logger("mesh")
 
 _PROTO = "fullagent-mesh/1"
 _RECV_LIMIT = 1 << 20          # 1 MiB per message line

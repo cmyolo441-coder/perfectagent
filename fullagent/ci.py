@@ -29,6 +29,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .kernel import EventLog
+from ._foundation import get_logger
+
+_log = get_logger("ci")
 
 _POLL_SECONDS = 2.0
 _TEST_NAME = re.compile(r"^(test_[a-z0-9_]+|[a-z0-9_]+_test)\.py$")

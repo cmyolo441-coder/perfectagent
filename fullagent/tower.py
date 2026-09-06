@@ -28,6 +28,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .kernel import EventLog, fold
 from .theater import Theater, _summary
+from ._foundation import get_logger
+
+_log = get_logger("tower")
 
 _PAGE = r"""<!doctype html>
 <html><head><meta charset="utf-8"><title>FullAgent Control Tower</title>

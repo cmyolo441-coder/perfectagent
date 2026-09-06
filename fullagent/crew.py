@@ -1,6 +1,7 @@
 """CREW — Codex-style persistent subagent lifecycle.
 
-The Crew is the ONLY way to execute a subagent — PERSISTENT, addressable
+The Crew is the legacy serial path for persistent subagents; /on uses
+the separate computer-mode scheduler. Crew provides — PERSISTENT, addressable
 agents with a real lifecycle, exactly like a lead engineer managing a
 roster of specialists:
 
@@ -37,6 +38,10 @@ import itertools
 import queue
 import threading
 import time
+from typing import Callable
+from ._foundation import get_logger
+
+_log = get_logger("crew")
 from dataclasses import dataclass, field
 
 from . import systemprompt
@@ -280,17 +285,43 @@ class Crew:
         return agent
 
     def wait(self, ids: list[str] | None = None,
-             timeout: float = 30.0) -> dict[str, str]:
+             timeout: float = 30.0,
+             should_cancel: "Callable[[], bool] | None" = None) -> dict[str, str]:
         """Block until the named subagents (default: all) leave the
-        running state, or the timeout lands. Returns {id: state}."""
+        running state, or the timeout lands. Returns {id: state}.
+        
+        should_cancel: optional callback — if it returns True, wait()
+        returns immediately and force-stops all running agents."""
         targets = [self._require(i) for i in ids] if ids else list(
             self._agents.values())
         deadline = time.monotonic() + max(0.0, timeout)
         while time.monotonic() < deadline:
+            if should_cancel is not None and should_cancel():
+                # FORCE STOP — user pressed Esc/Ctrl+C
+                self.force_stop()
+                break
             if all(a.state != "running" for a in targets):
                 break
             time.sleep(WAIT_POLL_SECONDS)
         return {a.id: a.state for a in targets}
+
+    def force_stop(self) -> None:
+        """Forcefully stop ALL running/queued agents. Called on Esc/Ctrl+C.
+        Sets state to 'closed' so the executor skips them."""
+        with self._lock:
+            for agent in self._agents.values():
+                if agent.state == "running":
+                    agent.state = "closed"
+                    agent.error = "force-stopped by user"
+        # Clear the job queue so queued agents don't run
+        while not self._jobs.empty():
+            try:
+                self._jobs.get_nowait()
+                self._jobs.task_done()
+            except Exception:
+                break
+        self.log.append("crew.force_stop", {"reason": "user_interrupt"},
+                        actor="sovereign")
 
     def close(self, agent_id: str) -> CrewAgent:
         """Retire a subagent. It keeps its history (resume() can bring
@@ -464,7 +495,7 @@ class Crew:
                 return
             state, summary = parse_worker_final(final)
             agent.summary = summary[:1800]
-            agent.state = state if state in ("done", "blocked") else "done"
+            agent.state = state if state in ("done", "blocked", "error") else "error"
             if not final.strip():
                 agent.error = "subagent returned an empty reply"
                 agent.state = "error"

@@ -30,6 +30,9 @@ from dataclasses import dataclass
 from . import systemprompt
 from .kernel import EventLog
 from .team import MAX_WORKERS, ROLES
+from ._foundation import get_logger
+
+_log = get_logger("meta")
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{2,20}$")
 _MIN_BRIEF_CHARS = 80

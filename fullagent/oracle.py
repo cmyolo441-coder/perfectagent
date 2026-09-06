@@ -20,6 +20,9 @@ import json
 from pathlib import Path
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("oracle")
 
 
 class Oracle:

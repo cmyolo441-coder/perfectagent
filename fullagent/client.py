@@ -11,7 +11,10 @@ from typing import Any, Callable, Iterator
 import requests
 
 from . import config
+from ._foundation import get_logger, NetworkError
 from .config import Effort, Model, Provider
+
+_log = get_logger("client")
 
 RETRY_STATUSES = {408, 429, 500, 502, 503, 504}
 MAX_RETRIES = 3
@@ -55,6 +58,24 @@ def _http() -> requests.Session:
         s.mount("http://", adapter)
         _SESSION = s
     return _SESSION
+
+
+def prewarm_connection(provider) -> None:
+    """SPEED: establish the TCP+TLS connection to the provider at startup
+    (or model switch), so the first model call doesn't pay the handshake
+    cost. Runs in a background thread — never blocks the UI. The connection
+    sits in the pool ready for the first real request."""
+    import threading
+
+    def _warm():
+        try:
+            url = provider.base_url.rstrip("/") + "/models"
+            _http().get(url, timeout=5,
+                        headers={"Authorization": f"Bearer {provider.api_key}"})
+        except Exception:
+            pass  # prewarming is best-effort, never a crash path
+
+    threading.Thread(target=_warm, daemon=True, name="prewarm").start()
 
 
 class TurnCancelled(Exception):
@@ -375,6 +396,9 @@ def _window_max_tokens(model: Model, effort: Effort, messages: list[dict],
 # an oversized max_tokens; providers without a known cap pass through.
 _MAX_TOKENS_CAP: dict[str, int] = {
     "agnes": 65_536,   # sglang backend: "max_tokens exceeds the limit of 65536"
+    "bai": 131_072,    # B.AI: 200k max_tokens causes "openai_error"
+    "tokenrouter": 131_072,  # "Validation: max_tokens must be at most 131072"
+    "xkiro": 65_536,  # XKiro max_output_tokens is 65536 for all 4 models
 }
 
 
@@ -392,9 +416,14 @@ def _clamp_max_tokens(provider_key: str, value: int) -> int:
 #     reasoning_effort must be low|medium|xhigh — so we force the
 #     floor effort "low". The thinking the model still produces is
 #     stripped client-side (never streamed, never stored).
+#   - bai (GLM models): "none" is rejected — must use low/high/max.
+#   - kiosapi (Grok 4.6): "none" is rejected — must use low.
 #   - every other provider: an explicit reasoning_effort "none".
 _THINKING_OFF_PAYLOAD: dict[str, dict[str, Any]] = {
     "tokenrouter": {"reasoning_effort": "low"},
+    "bai": {"reasoning_effort": "low"},  # GLM: "none" rejected, use low
+    "kiosapi": {"reasoning_effort": "low"},  # Grok 4.6: "none" rejected
+    "xkiro": {"reasoning_effort": "low"},  # Qwen/MiniMax reasoning: use low
 }
 
 

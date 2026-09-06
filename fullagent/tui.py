@@ -5,12 +5,17 @@ The double-line box stays pinned at the bottom at all times; all output
 (user echo, streamed tokens, tool lines, errors) scrolls above it through
 prompt_toolkit's patch_stdout. The box border carries live state:
 
-    ╭─ FullAgent ── model: MiMo v2.5 FREE ── effort: HIGH ── session a1b2c3d4 ─╮
+    ╭─ FullAgent ──●── MiMo v2.5 ──◆ FREE── ◈ high ──⬢ L3── ◎ goal ▰▰▰▱▱ 60% ──◉ ctx 12% ─╮
     │ ❯ user types here…                                                       │
-    ╰─ ⠹ thinking…  ·  Ctrl+C cancel ──────────────────────────────────────────╯
+    ╰ ⏎ send · ⇧⏎ newline · / cmds · ^T models · ^E effort ────────────────────╯
 
-Overlays (model / effort / help / history) render directly above the box and
-are navigated with ↑↓, PgUp/PgDn, Tab, Home/End.
+Top border: provider dot (provider colour), FREE/FAST tag, effort
+(effort colour), autonomy badge ⬢ (dim→green→yellow→red with level),
+goal progress bar ◎ ▰▱ + %, focus counter, live context meter ◉.
+Bottom border: live spinner + elapsed seconds while busy, ✦ flash
+messages, coloured [y]es/[n]o/[a]lways approval bar, styled key hints
+when idle. Overlays (model / effort / help / history) render directly
+above the box and are navigated with ↑↓, PgUp/PgDn, Tab, Home/End.
 """
 
 from __future__ import annotations
@@ -65,8 +70,6 @@ from rich.text import Text
 
 from . import config
 from .agent import Agent, ToolEvent
-from .supercomputer import SupercomputerError
-from .systemprompt import SUPER_SPECIALTIES
 from .config import (
     APP_NAME,
     EFFORTS,
@@ -79,6 +82,7 @@ from .config import (
     model_by_id,
 )
 from .tools import Tool
+from .computer.bridge import ComputerBridge
 
 
 class SafeFileHistory(FileHistory):
@@ -138,6 +142,9 @@ STYLE = Style.from_dict({
     "box.spinner": f"bold {C['accent']}",
     "box.flash": f"bold {C['yellow']}",
     "box.approve": f"bold {C['yellow']}",
+    "box.key": f"bold {C['cyan']}",
+    "box.sep": C["dim"],
+    "box.goalbar": f"bold {C['green']}",
     "arrow": f"bold {C['green']}",
     "cont": C["dim"],
     "stream.preview": C["fg"],
@@ -156,55 +163,6 @@ STYLE = Style.from_dict({
 
 EFFORT_COLORS = {e.key: e.color for e in EFFORTS}
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-
-# Small talk that must NEVER become an 8-core mission: a greeting
-# answered by 8 parallel cores costs lakhs of tokens and minutes.
-_SMALL_TALK = frozenset({
-    "hello", "hi", "hey", "hii", "helo", "hello!", "hi!", "hey!",
-    "namaste", "namaste!", "salaam", "good morning", "good afternoon",
-    "good evening", "good night", "thanks", "thank you", "thankyou",
-    "thanks!", "thank you!", "shukriya", "ok", "okay", "ok!", "k",
-    "bye", "goodbye", "see you", "welcome", "congrats", "congratulations",
-    "great", "nice", "cool", "awesome", "perfect", "got it", "understood",
-    "hmm", "hmm?", "really?", "seriously?", "wow", "oh", "ohh", "acha",
-    "accha", "samajh gaya", "theek hai", "theek", "haan", "haan ji",
-    "yes", "no", "nahi", "nahin", "sorry", "sorry!", "my bad",
-    "kaise ho", "how are you", "how are you?", "kya haal hai",
-    "kya ho raha hai", "kya horaha hai", "kya chal raha hai",
-    "kya kar rahe ho", "aur batao", "kya scene hai", "sab badhiya",
-    "badia", "mast", "all good",
-    "what's up", "whats up", "sup", "yo", "test", "testing", "ping",
-})
-
-
-def _is_small_talk(text: str) -> bool:
-    """Greetings/thanks/one-word reactions → cheap single reply.
-
-    Only matches short messages with no mission content: under 30
-    chars, no file paths, no code, no question words asking for work.
-    Real short tasks ("count files", "fix bug") still become missions.
-    Typo-tolerant (Hinglish spacings like "kya hor aha hai") via a
-    spaceless fuzzy match — threshold kept high so real tasks never
-    get swallowed.
-    """
-    t = text.strip().lower()
-    if not t or len(t) > 30:
-        return False
-    if any(ch in t for ch in ("/", "\\", ".py", ".js", ".ts", "{", "}",
-                              ";", "=", "(", "import ")):
-        return False
-    if t in _SMALL_TALK:
-        return True
-    squashed = t.replace(" ", "")
-    if len(squashed) < 6:
-        return False
-    for s in _SMALL_TALK:
-        packed = s.replace(" ", "")
-        if abs(len(squashed) - len(packed)) > 3:
-            continue
-        if difflib.SequenceMatcher(None, squashed, packed).ratio() >= 0.85:
-            return True
-    return False
 
 # ---------------------------------------------------------------------------
 # Rich markdown rendering tweaks (used for non-streamed output)
@@ -277,6 +235,9 @@ def make_console() -> Console:
 # ---------------------------------------------------------------------------
 
 SLASH_COMMANDS = [
+    ("/on", "open an 8-agent live computer workspace — /on [directory]"),
+    ("/off", "stop computer mode and return to normal chat"),
+    ("/computer", "computer control — help · pause · resume · cancel · report · set"),
     ("/model", "select model — PgUp/PgDn/Tab to navigate"),
     ("/effort", "low · medium · high · extrahigh · ultrahigh"),
     ("/goal", "goal contract — set · prove · close · status · waive · clear"),
@@ -325,7 +286,6 @@ SLASH_COMMANDS = [
     ("/vitals", "homeostasis check + self-repair"),
     ("/attention", "last context token auction"),
     ("/fabric", "bitemporal knowledge — /fabric ask|assert|history"),
-    ("/crew", "persistent subagents — /crew [spawn|send|wait|close|resume|status]"),
     ("/auto", "autopilot self-routing — /auto [on|off|status]"),
     ("/prompt", "system prompt — /prompt [main|master|list]"),
     ("/mastermind", "prompt coherence ledger — sealed prompts, gate, lineage"),
@@ -342,8 +302,6 @@ SLASH_COMMANDS = [
     ("/coverage", "line-coverage ledger — last measured runs"),
     ("/fuzz", "fuzzing ledger — runs, crashes, shrunk reproducers"),
     ("/mutate", "mutation testing — /mutate <file> <suite-command>"),
-    ("/on", "SUPERCOMPUTER — boot 8 parallel cores; /on <mission> runs it"),
-    ("/off", "power the supercomputer down"),
     ("/help", "commands and key bindings"),
     ("/clear", "clear the screen"),
     ("/new", "fresh conversation"),
@@ -620,7 +578,9 @@ class UI:
         self._busy = False
         self._status_text = ""
         self._spinner_i = 0
+        self._spinner_gen = 0
         self._spinner_on = False
+        self._turn_start_ts = 0.0
         self._cancel_flag = threading.Event()
         self._last_flush = 0.0
         # SPEED: cached terminal size (queried at most twice a second)
@@ -631,9 +591,11 @@ class UI:
         self._approve_request: tuple[Tool, dict, threading.Event] | None = None
         self._approve_result = False
 
-        # flash message in the bottom border
+        # flash message in the bottom border (generation-guarded: a
+        # stale timer from an older flash can never clear a newer one)
         self._flash: tuple[str, str] | None = None
         self._flash_timer: threading.Timer | None = None
+        self._flash_gen = 0
 
         # goal-status cache for the border (fold is not free per frame)
         self._goal_cache = None
@@ -646,13 +608,8 @@ class UI:
         self._ctx_cache: int | None = None
         self._ctx_cache_ts = 0.0
 
-        # SUPERCOMPUTER live board: /on flips super mode, so a plain
-        # message becomes a mission for all 8 cores. The paint throttle
-        # keeps a 4 GB box from redrawing an unchanged screen.
-        self._super_mode = False
-        self._super_last = ""
-        self._super_last_paint = 0.0
-
+        self.computer_mode = ComputerBridge(self)
+        self._computer_approval_kind = None
         self._build()
 
     # -- small helpers ---------------------------------------------------------
@@ -688,15 +645,21 @@ class UI:
             pass
 
     def _set_flash(self, text: str, color: str = C["yellow"]) -> None:
+        self._flash_gen += 1
+        gen = self._flash_gen
         self._flash = (text, color)
         if self._flash_timer:
             self._flash_timer.cancel()
-        self._flash_timer = threading.Timer(4.0, self._clear_flash)
+        self._flash_timer = threading.Timer(4.0, self._clear_flash, args=(gen,))
         self._flash_timer.daemon = True
         self._flash_timer.start()
         self._invalidate()
 
-    def _clear_flash(self) -> None:
+    def _clear_flash(self, gen: int | None = None) -> None:
+        # A timer from an older flash must never wipe a newer message —
+        # the generation check makes the clear a no-op when stale.
+        if gen is not None and gen != self._flash_gen:
+            return
         self._flash = None
         self._invalidate()
 
@@ -713,15 +676,24 @@ class UI:
         model = self._model()
         effort = self._effort()
         effort_color = EFFORT_COLORS.get(effort.key, C["fg"])
+        prov = PROVIDERS.get(model.provider)
+        prov_color = (prov.color if prov is not None else C["accent"])
 
         segs: list[tuple[str, str]] = []
         segs.append((f" {APP_NAME} ", "class:box.title"))
-        segs.append((f" model: {model.label} ", "class:box.model"))
+        segs.append((" ● ", f"bold {prov_color}"))
+        segs.append((f" {model.label} ", "class:box.model"))
         if model.tag:
-            segs.append((f"{model.tag} ", "class:box.tag"))
-        segs.append((f" effort: {effort.label.lower()} ",
+            segs.append((f"◆ {model.tag} ", "class:box.tag"))
+        segs.append((f" ◈ {effort.label.lower()} ",
                      f"class:box.effort {effort_color}"))
-        segs.append((f" L{self.agent.autonomy} ", "class:box.tag"))
+        # autonomy ladder — colour tells the risk at a glance:
+        # observer/advisor dim, assistant/collaborator green,
+        # pilot yellow, autonomous red
+        auto = self.agent.autonomy
+        auto_color = (C["dim"] if auto <= 1 else C["green"] if auto <= 3
+                      else C["yellow"] if auto == 4 else C["red"])
+        segs.append((f" ⬢ L{auto} ", f"bold {auto_color}"))
         # live goal distance — always on screen when a goal is active (§24).
         # cached for 1s: the border re-renders every frame, and status()
         # folds the whole log
@@ -731,20 +703,14 @@ class UI:
             self._goal_cache_ts = now
         goal = self._goal_cache
         if goal.active:
-            segs.append((f" goal: {(1 - goal.distance) * 100:.0f}% ",
+            pct = max(0, min(100, (1 - goal.distance) * 100))
+            filled = int(round(pct / 20))
+            bar = "▰" * filled + "▱" * (5 - filled)
+            segs.append((f" ◎ goal {bar} {pct:.0f}% ",
                          "class:box.status"))
         if self._focus_remaining > 0:
             segs.append((f" 🎯 focus×{self._focus_remaining} ",
                          "class:box.flash"))
-        # SUPERCOMPUTER indicator — live core count, always visible when on
-        try:
-            sc = self.agent.supercomputer
-            if sc.online:
-                live = sum(1 for c in sc.cores
-                           if c.state in ("thinking", "tool"))
-                segs.append((f" 🖥 {live}/{sc.n} ", "class:box.tag"))
-        except Exception:
-            pass
         # live context usage — cached 1s (the border redraws every frame)
         if self._ctx_cache is None or now - self._ctx_cache_ts > 1.0:
             try:
@@ -759,9 +725,9 @@ class UI:
         ctx_color = (C["green"] if self._ctx_cache < 60
                      else C["yellow"] if self._ctx_cache < 85
                      else C["red"])
-        segs.append((f" ctx {self._ctx_cache}% ",
+        segs.append((f" ◉ ctx {self._ctx_cache}% ",
                      f"bold {ctx_color}"))
-        segs.append((f" session: {self.agent.session_id} ", "class:box.session"))
+        segs.append((f" ⌛ session: {self.agent.session_id} ", "class:box.session"))
 
         # fixed = corners (2) + first dash (1) + "──" before each later seg
         def fixed_len(segs: list) -> int:
@@ -781,58 +747,78 @@ class UI:
         frags.append(("class:box", "─" * fill + "╮"))
         return frags
 
-    def _super_busy(self) -> bool:
-        """True while the 8-core machine runs a mission (cheap lock check).
-
-        Normal turns set self._busy, but supercomputer missions run on a
-        background thread — without this the prompt box would look idle
-        while 8 cores work."""
-        try:
-            return bool(self.agent.supercomputer.busy)
-        except Exception:  # noqa: BLE001 — box render must never fail
-            return False
-
     def _bottom_fragments(self) -> list:
         width = self._width()
         inner = width - 2
 
-        if self._approve_request is not None:
-            tool = self._approve_request[0]
-            bar = f" ⚠ approve {tool.name}?  [y]es  [n]o  [a]lways "[:max(1, inner)]
-            return ([("class:box", "╰"), ("class:box.approve", bar),
-                     ("class:box", "─" * max(0, inner - len(bar)) + "╯")]
-                    + self._approve_args_line(tool, self._approve_request[1]))
+        request = self._approve_request
+        if request is not None:
+            tool = request[0]
+            name = tool.name[: max(1, inner - 34)]
+            head = f" ⚠ approve {name}? "
+            y, n, a = " [y]es ", " [n]o ", " [a]lways "
+            plain = head + y.strip() + " " + n.strip() + " " + a.strip()
+            fill = "─" * max(0, inner - len(head) - len(y) - len(n) - len(a))
+            return ([("class:box", "╰"),
+                     ("class:box.approve", head),
+                     (f"bold {C['green']}", y),
+                     ("class:box.hint", " "),
+                     (f"bold {C['red']}", n),
+                     ("class:box.hint", " "),
+                     (f"bold {C['yellow']}", a),
+                     ("class:box", fill + "╯")]
+                    + self._approve_args_line(tool, request[1]))
 
-        if self._busy or self._super_busy():
-            # one smooth spinner source: _spinner_i advances at 11 fps
-            # via the pump (normal turns and super missions alike)
+        if self.computer_mode.running:
+            snap = self.computer_mode.engine.snapshot()
+            label = f" {snap['status']} · {snap['phase']} · /computer help · Ctrl+C cancel "
+            label = label[:max(0, inner)]
+            return [("class:box", "╰"), ("class:box.status", label),
+                    ("class:box", "─" * max(0, inner-len(label)) + "╯")]
+
+        if self._busy:
             frame = SPINNER_FRAMES[self._spinner_i]
-            max_status = max(0, inner - len(" ⠹  ·  Esc/Ctrl+C cancel ") - 4)
+            elapsed = ""
+            if self._turn_start_ts:
+                elapsed = f" · {max(0, int(time.time() - self._turn_start_ts))}s"
+            tail = " · Esc cancel "
+            max_status = max(0, inner - len(f" ⠹  ·  Esc cancel ") - len(elapsed) - 4)
             status = self._status_text[:max_status]
-            if not self._busy and not status.startswith("🖥"):
-                status = f"🖥 {status}" if status else "🖥 supercomputer working…"
-            bar = f" {frame} {status}  ·  Esc/Ctrl+C cancel "
+            bar_len = len(f" {frame} {status}{elapsed} {tail}")
             return [("class:box", "╰"),
                     ("class:box.spinner", f" {frame} "),
                     ("class:box.status", status),
-                    ("class:box.hint", "  ·  Esc/Ctrl+C cancel "),
+                    ("class:box.hint", f"{elapsed}{tail}"),
                     ("class:box",
-                     "─" * max(0, inner - len(bar)) + "╯")]
+                     "─" * max(0, inner - bar_len) + "╯")]
 
         if self._flash:
             text, color = self._flash
-            hint = f" {text} "[:max(1, inner)]
+            hint = f" ✦ {text} "[:max(1, inner)]
             return [("class:box", "╰"), (f"bold {color}", hint),
                     ("class:box", "─" * max(0, inner - len(hint)) + "╯")]
 
-        hint = (" Enter send · Esc+Enter newline · / commands · "
-                "Ctrl+T models · Ctrl+E effort · Ctrl+C cancel ")
-        if len(hint) > inner:
-            hint = " Enter send · / commands · Ctrl+T models · Ctrl+C cancel "
-        if len(hint) > inner:
-            hint = " Enter send "
-        return [("class:box", "╰"), ("class:box.hint", hint[:inner]),
-                ("class:box", "─" * max(0, inner - len(hint)) + "╯")]
+        # idle — styled keys, gracefully degrading on narrow terminals
+        # NOTE: fragments are (style, text) tuples — keep this order.
+        key = "class:box.key"
+        dim = "class:box.hint"
+        box = "class:box"
+        if inner >= len("⏎ send · ⇧⏎ newline · / cmds · ^T models · ^E effort ") + 1:
+            segs = [(box, " ⏎ "), (key, "send"),
+                    (dim, " · ⇧⏎ newline · "), (key, "/"), (dim, " cmds · "),
+                    (key, "^T"), (dim, " models · "), (key, "^E"),
+                    (dim, " effort ")]
+        elif inner >= len("⏎ send · / cmds · ^T models ") + 1:
+            segs = [(box, " ⏎ "), (key, "send"),
+                    (dim, " · "), (key, "/"), (dim, " cmds · "),
+                    (key, "^T"), (dim, " models ")]
+        else:
+            segs = [(box, " ⏎ "), (key, "send"), (dim, " ")]
+        frags: list = [(box, "╰")]
+        frags.extend(segs)
+        used = 1 + sum(len(t) for _, t in segs)
+        frags.append((box, "─" * max(0, inner - used) + "╯"))
+        return frags
 
     def _approve_args_line(self, tool: Tool, args: dict) -> list:
         return []
@@ -861,7 +847,7 @@ class UI:
         def get_line_prefix(line: int, wrap_count: int):
             if line == 0 and wrap_count == 0:
                 return [("class:arrow", "❯ ")]
-            return [("class:cont", "  ")]
+            return [("class:cont", "│ ")]
 
         self.input_control = BufferControl(
             buffer=self.buffer,
@@ -891,6 +877,10 @@ class UI:
         root = FloatContainer(
             HSplit([
                 ConditionalContainer(
+                    Window(FormattedTextControl(self.computer_mode.dashboard),
+                           dont_extend_height=True, wrap_lines=False),
+                    filter=Condition(lambda: self.computer_mode.enabled)),
+                ConditionalContainer(
                     overlay_window,
                     filter=Condition(self._overlay_open)),
                 top_window,
@@ -913,6 +903,8 @@ class UI:
             key_bindings=self._build_key_bindings(),
             full_screen=False,
             mouse_support=False,
+            refresh_interval=0.25,
+            min_redraw_interval=0.1,
         )
 
     def _search_visible(self) -> bool:
@@ -985,6 +977,8 @@ class UI:
 
         @kb.add("c-c", filter=approving)
         def _appr_cancel(event):
+            if self.computer_mode.running:
+                self.computer_mode.cancel()
             self._answer_approve("n")
 
         # --- overlay navigation ---
@@ -1066,8 +1060,11 @@ class UI:
 
         @kb.add("c-c", filter=focused & ~ov & idle)
         def _ctrl_c(event):
-            if self._busy:
+            if self.computer_mode.running:
+                self.computer_mode.cancel()
+            elif self._busy:
                 self._cancel_flag.set()
+                self.agent._cancel_flag.set()  # sync with agent for crew force stop
                 self._set_status("cancelling…")
             elif self.buffer.text:
                 self.buffer.reset()
@@ -1079,10 +1076,15 @@ class UI:
         # single Esc while a turn is running = interrupt, exactly like
         # Ctrl+C (Esc+Enter stays the multi-line newline binding above)
         @kb.add(Keys.Escape, filter=focused & ~ov &
-                Condition(lambda: self._busy))
+                Condition(lambda: self._busy or self.computer_mode.running))
         def _esc_cancel(event):
+            if self.computer_mode.running:
+                self.computer_mode.cancel()
+                return
             self._cancel_flag.set()
+            self.agent._cancel_flag.set()  # sync with agent for crew force stop
             self._set_status("cancelling…")
+            self._set_flash("⊘ cancelling — force stopping…", C["yellow"])
 
         # Esc at the approve bar = "no", same as Ctrl+C there
         @kb.add(Keys.Escape, filter=approving)
@@ -1131,29 +1133,17 @@ class UI:
     # -- dispatch: slash commands + turns ----------------------------------------------------
 
     def _dispatch(self, text: str) -> None:
+        if self.computer_mode.enabled and not text.startswith("/"):
+            try:
+                self.computer_mode.submit(text)
+            except Exception as exc:
+                self.print_error(str(exc))
+            return
+        if self.computer_mode.running and not text.startswith("/"):
+            self.print_error("Computer workers are stopping; wait before starting normal chat")
+            return
         if text.startswith("/"):
             self._handle_slash(text)
-            return
-        # SUPERCOMPUTER mode: while the machine is on, a plain message is
-        # a MISSION for all eight cores, not a single-agent turn —
-        # EXCEPT small talk: greetings/thanks/etc. get a cheap single
-        # reply instead of burning lakhs of tokens on "hello".
-        if self._super_mode and self.agent.supercomputer.online:
-            if self.agent.supercomputer.busy:
-                self._set_flash("mission running — /on stop to abort",
-                                C["yellow"])
-                return
-            if self._busy:
-                # a small-talk reply is still streaming — never overlap
-                self._set_flash("busy — wait for the reply (Ctrl+C to "
-                                "cancel)", C["yellow"])
-                return
-            self._emit_user(text)
-            if _is_small_talk(text):
-                threading.Thread(target=self._run_turn_thread, args=(text,),
-                                 daemon=True).start()
-            else:
-                self._super_launch(text)
             return
         if self._busy:
             # a turn is already running — never overlap two agent loops
@@ -1177,17 +1167,23 @@ class UI:
             self.print_error(f"{type(e).__name__}: {e}")
 
     def _route_slash(self, cmd: str, arg: str) -> None:
+        if cmd == "/on":
+            self.computer_mode.on(arg)
+            return
+        if cmd == "/off":
+            self.computer_mode.off()
+            return
+        if cmd == "/computer":
+            self.computer_mode.command(arg)
+            return
+        if self.computer_mode.running and cmd not in ("/exit", "/quit", "/q", "/clear", "/help", "/about", "/model", "/models", "/effort"):
+            self.print_error("A computer mission is active. Use /computer controls; legacy actions are locked until it stops.")
+            return
         if cmd in ("/exit", "/quit", "/q"):
+            self.computer_mode.shutdown()
             self.print_info(f"bye — session {self.agent.session_id} saved",
                             C["dim"])
             self.agent.save_session()
-            try:
-                # stop the 8-core pool first: otherwise the interpreter
-                # hangs in ThreadPoolExecutor join on exit (the
-                # KeyboardInterrupt traceback on shutdown).
-                self.agent.supercomputer.shutdown()
-            except Exception:  # noqa: BLE001 — exit must never fail
-                pass
             self.app.exit()
         elif cmd == "/new":
             self.agent.reset()
@@ -1212,6 +1208,33 @@ class UI:
                     self.print_info(f"✓ model → {m.label} ({m.id})", C["green"])
             else:
                 self.open_model_selector()
+        elif cmd == "/models":
+            sub = arg.strip().lower()
+            if sub == "reload":
+                from . import config as _cfg
+                before = len(_cfg.MODELS)
+                _cfg.load_custom_models()
+                after = len(_cfg.MODELS)
+                added = after - before
+                self.print_info(
+                    f"✓ models reloaded — {after} total"
+                    + (f" (+{added} new)" if added else ""),
+                    C["green"])
+            elif sub == "list":
+                from .config import MODELS as _MODELS, PROVIDERS as _PROVS
+                lines = [f"MODELS ({len(_MODELS)}):"]
+                for m in _MODELS:
+                    p = _PROVS.get(m.provider)
+                    pname = p.name if p else "?"
+                    tag = f" [{m.tag}]" if m.tag else ""
+                    lines.append(f"  {m.id:<45} {m.label}{tag} · {pname}")
+                self.print_info("\n".join(lines), C["cyan"])
+            else:
+                self.print_info(
+                    "usage: /models reload | /models list\n"
+                    "  reload — hot-load models.json (add models without restart)\n"
+                    "  list   — show all available models",
+                    C["dim"])
         elif cmd == "/effort":
             arg = arg.split()[0] if arg else ""
             if arg:
@@ -1341,8 +1364,6 @@ class UI:
             self.print_info(self.agent.attention.format_last(), C["cyan"])
         elif cmd == "/fabric":
             self._cmd_fabric(arg)
-        elif cmd == "/crew":
-            self._cmd_crew(arg)
         elif cmd == "/auto":
             self._cmd_auto(arg)
         elif cmd == "/prompt":
@@ -1375,10 +1396,6 @@ class UI:
             self.print_info(self.agent.fuzzer.format_status(), C["yellow"])
         elif cmd == "/mutate":
             self._cmd_mutate(arg)
-        elif cmd == "/on":
-            self._cmd_on(arg)
-        elif cmd == "/off":
-            self._cmd_off()
         elif cmd == "/about":
             from . import __version__
             self.print_info(f"{APP_NAME} v{__version__} — advanced terminal "
@@ -2564,365 +2581,6 @@ class UI:
             return
         self.print_error("usage: /mission [start|tick|list|abandon] …")
 
-    def _cmd_crew(self, arg: str) -> None:
-        """Persistent Codex-style subagents:
-        /crew                             roster + states
-        /crew spawn <role> <task>         launch a background subagent
-        /crew send <id> <message>         follow-up into its context
-        /crew wait [id,…]                 collect results (blocking)
-        /crew close <id> · /crew resume <id>"""
-        from .crew import CrewError
-        crew = self.agent.crew
-        parts = arg.split(None, 1)
-        sub = parts[0].lower() if parts else "status"
-        rest = parts[1].strip() if len(parts) > 1 else ""
-
-        if sub in ("", "status", "list"):
-            self.print_info(crew.format_status(), C["cyan"])
-            return
-        if sub == "spawn":
-            rparts = rest.split(None, 1)
-            if len(rparts) < 2:
-                self.print_error("usage: /crew spawn <role> <task>  "
-                                 "(roles: coder researcher tester "
-                                 "reviewer analyst)")
-                return
-            role, task = rparts[0], rparts[1]
-            try:
-                agent = crew.spawn(task, role=role,
-                                   context=self.agent.scout_context(),
-                                   read_only=self.agent.autonomy <= 1)
-            except CrewError as e:
-                self.print_error(str(e))
-                return
-            self.print_info(f"⚡ subagent [{agent.id}] '{agent.nickname}' "
-                            f"({agent.role}) launched in background — "
-                            f"/crew wait collects it", C["green"])
-            return
-        if sub == "send":
-            sparts = rest.split(None, 1)
-            if len(sparts) < 2:
-                self.print_error("usage: /crew send <id> <message>")
-                return
-            try:
-                agent = crew.send(sparts[0], sparts[1])
-            except CrewError as e:
-                self.print_error(str(e))
-                return
-            self.print_info(f"✓ message → [{agent.id}] '{agent.nickname}' "
-                            f"(state: {agent.state})", C["green"])
-            return
-        if sub == "wait":
-            ids = [s.strip() for s in rest.split(",") if s.strip()] or None
-            self.print_info("⏳ waiting for subagents…", C["dim"])
-            try:
-                states = crew.wait(ids, timeout=300.0)
-            except CrewError as e:
-                self.print_error(str(e))
-                return
-            self.print_info(f"states: {states}", C["cyan"])
-            self.console.print(self._crew_panel(
-                [crew.get(i) for i in states if crew.get(i)]))
-            return
-        if sub == "close":
-            try:
-                agent = crew.close(rest)
-            except CrewError as e:
-                self.print_error(str(e))
-                return
-            self.print_info(f"✓ [{agent.id}] '{agent.nickname}' closed",
-                            C["yellow"])
-            return
-        if sub == "resume":
-            try:
-                agent = crew.resume(rest)
-            except CrewError as e:
-                self.print_error(str(e))
-                return
-            self.print_info(f"✓ [{agent.id}] '{agent.nickname}' resumed "
-                            f"({agent.state})", C["green"])
-            return
-        self.print_error("crew subcommands: spawn · send · wait · close · "
-                         "resume · status")
-
-    def _crew_panel(self, agents) -> Panel:
-        """A rich panel rendering the crew's reports — role icons, status
-        glyphs, files touched, summaries."""
-        body = Text()
-        icons = {"done": ("✓", C["green"]), "blocked": ("◐", C["yellow"]),
-                 "error": ("✗", C["red"]), "closed": ("⊘", C["dim"]),
-                 "running": ("…", C["cyan"])}
-        role_icons = {"researcher": "🔎", "coder": "👨‍💻", "tester": "🧪",
-                      "reviewer": "🧐", "analyst": "📊"}
-        for a in agents:
-            glyph, color = icons.get(a.state, ("?", C["dim"]))
-            body.append(f"{role_icons.get(a.role, '◆')} ", style=color)
-            body.append(f"[{a.id}] {a.nickname}", style=f"bold {C['fg']}")
-            body.append(f" ({a.role}) ", style=C["dim"])
-            body.append(f"{glyph} {a.state}", style=f"bold {color}")
-            body.append(f"  ·  {a.tool_calls} tools · "
-                        f"{a.elapsed_ms / 1000:.1f}s\n", style=C["dim"])
-            body.append(f"  task: {a.task[:160]}\n", style=C["dim"])
-            if a.files_touched:
-                body.append("  files: ", style=C["dim"])
-                body.append(", ".join(a.files_touched[:8]) + "\n",
-                            style=C["cyan"])
-            if a.error:
-                body.append(f"  error: {a.error[:200]}\n", style=C["red"])
-            if a.summary:
-                body.append("  " + a.summary.replace("\n", "\n  ")[:900]
-                            + "\n", style=C["fg"])
-            body.append("\n")
-        return Panel(body, title=f"⚡ CREW — {len(agents)} subagent(s)",
-                     border_style=C["accent"], expand=False,
-                     padding=(0, 1))
-
-    # -- SUPERCOMPUTER: /on — 8 cores, live board ---------------------------------
-
-    # Live-board helpers: one spinner + one wall clock shared by the
-    # status line and the board header, so "live" seconds tick in the
-    # cheap status line (1 invalidate/sec) instead of a full panel
-    # reprint per core-step (which spammed the scrollback).
-    _SUPER_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-
-    @staticmethod
-    def _super_spin() -> str:
-        return UI._SUPER_SPINNER[int(time.time() * 8)
-                                 % len(UI._SUPER_SPINNER)]
-
-    @staticmethod
-    def _super_clock() -> str:
-        # local wall time + short zone, e.g. "14:32:11 IST" (Windows
-        # reports the full "India Standard Time", so abbreviate it)
-        zone = time.strftime("%Z")
-        if len(zone) > 5:
-            zone = "".join(w[0] for w in zone.split() if w and w[0].isupper())
-        return f"{time.strftime('%H:%M:%S')} {zone}".strip()
-
-    def _cmd_on(self, arg: str) -> None:
-        """/on              boot the machine (then just type your mission)
-        /on <mission>       boot and launch the mission immediately
-        /on status          the live board once
-        /on report          the last mission report
-        /on stop            abort the running mission"""
-        sc = self.agent.supercomputer
-        sub = arg.strip()
-        low = sub.lower()
-
-        if low == "status":
-            self.print_info(sc.format_status(), C["cyan"])
-            return
-        if low == "report":
-            self.print_info(sc.format_report(), C["cyan"])
-            return
-        if low == "stop":
-            self.print_info(sc.stop(), C["yellow"])
-            return
-
-        if not sc.online:
-            self.agent.sync_supercomputer()
-            sc.on_update = self._super_tick
-            self.print_info(sc.boot(), C["green"])
-            self.console.print(self._super_boot_panel())
-            self._super_mode = True
-        if not sub:
-            self.print_info(
-                "supercomputer is ONLINE — type your mission as a normal "
-                "message and all 8 cores take it. /off powers down.",
-                C["dim"])
-            return
-        self._super_launch(sub)
-
-    def _cmd_off(self) -> None:
-        sc = self.agent.supercomputer
-        self._super_mode = False
-        self.print_info(sc.shutdown(), C["yellow"])
-
-    def _super_boot_panel(self) -> Panel:
-        sc = self.agent.supercomputer
-        body = Text()
-        body.append("EIGHT CORES ONLINE — parallel mission machine\n\n",
-                    style=f"bold {C['green']}")
-        for core in sc.cores:
-            spec = SUPER_SPECIALTIES.get(core.callsign, "")
-            body.append(f"  ◈ {core.callsign:<7}", style=f"bold {C['cyan']}")
-            body.append(f"{spec}\n", style=C["dim"])
-        body.append("\nPIPELINE  ", style=f"bold {C['fg']}")
-        body.append("recon → relay(v1→v8) ∥ deepdive → fuse → build×8 → "
-                    "verify×8 ⇄ repair×8\n", style=C["accent"])
-        body.append("Type your mission. /on stop aborts · /off powers down.",
-                    style=C["dim"])
-        return Panel(body, title="🖥  SUPERCOMPUTER", border_style=C["accent"],
-                     expand=False, padding=(0, 1))
-
-    def _super_launch(self, objective: str) -> None:
-        """Run a mission on a worker thread; the board paints live."""
-        sc = self.agent.supercomputer
-        if sc.busy:
-            self.print_error("a mission is already running — /on stop "
-                             "aborts it")
-            return
-        self.agent.sync_supercomputer()
-        sc.on_update = self._super_tick
-        self._super_last_phase = ""
-        self._super_last_summary = None
-        self._super_last_board = 0.0
-        self.print_info(f"🚀 MISSION: {objective}", C["pink"])
-
-        def ticker():
-            # Cheap 1 Hz heartbeat while the mission runs: only the
-            # status line (spinner + wall clock + elapsed seconds) is
-            # refreshed — no full board reprint, no scrollback spam.
-            while sc.busy:
-                try:
-                    self._super_clock_tick()
-                except Exception:  # noqa: BLE001
-                    pass
-                time.sleep(1.0)
-
-        def run():
-            # smooth spinner: the same 11 fps pump normal turns use.
-            # (Time-based frames stuttered — pings arrive in bursts with
-            # dead gaps during long model calls.)
-            self._start_spinner()
-            try:
-                threading.Thread(target=ticker, daemon=True).start()
-                sc.run_mission(objective)
-            except SupercomputerError as e:
-                self.print_error(str(e))
-                return
-            finally:
-                self._stop_spinner()
-            self._super_paint(force=True)
-            self.console.print(self._super_report_panel())
-            self._set_status("")
-
-        self._bg(run)
-
-    def _super_tick(self) -> None:
-        """Called by the machine on every state change — cheap, throttled."""
-        try:
-            self._super_paint()
-        except Exception:  # noqa: BLE001 — painting never breaks a mission
-            pass
-
-    def _super_clock_tick(self) -> None:
-        """1 Hz heartbeat: wall clock + elapsed seconds.
-
-        Only touches the cheap status line (one invalidate), so the
-        seconds visibly tick without reprinting the board. The spinner
-        itself lives in the prompt-box frame (11 fps pump), not here —
-        a baked-in char would stutter between pings."""
-        sc = self.agent.supercomputer
-        snap = sc.snapshot()
-        live = sum(1 for c in snap["cores"]
-                   if c["state"] in ("thinking", "tool"))
-        self._status_text = (
-            f"🖥 {snap['phase'] or 'boot'}"
-            + (f" r{snap['round']}" if snap["round"] else "")
-            + f" · {live}/{len(snap['cores'])} live"
-            + f" · {snap['elapsed']:.0f}s · {self._super_clock()}")
-        self._invalidate()
-
-    def _super_paint(self, force: bool = False) -> None:
-        """Update the live view without spamming the scrollback.
-
-        Full board panels print on phase change, and (throttled to one
-        per ~4s) when the core-state summary changes — e.g. idle burst
-        → all thinking → first completions. So the recon board never
-        sits frozen on standby, but we still print a handful of panels
-        per mission instead of dozens. Per-second liveness ticks in the
-        cheap status line via _super_clock_tick."""
-        sc = self.agent.supercomputer
-        snap = sc.snapshot()
-        live = sum(1 for c in snap["cores"]
-                   if c["state"] in ("thinking", "tool"))
-        self._set_status(
-            f"🖥 {snap['phase'] or 'boot'}"
-            + (f" r{snap['round']}" if snap["round"] else "")
-            + f" · {live}/{len(snap['cores'])} cores live · "
-              f"v{snap['plan_version']} · {snap['files']}f · "
-              f"{snap['defects']}d · {snap['tokens']:,}tok"
-              f" · {snap['elapsed']:.0f}s · {self._super_clock()}")
-        if force or snap["phase"] != getattr(self, "_super_last_phase", ""):
-            self._super_last_phase = snap["phase"]
-            self._super_last_summary = None
-            self._super_last_board = time.time()
-            self.console.print(self._super_board(snap))
-            return
-        summary = (live,
-                   sum(1 for c in snap["cores"] if c["state"] == "done"),
-                   sum(1 for c in snap["cores"]
-                       if c["state"] in ("error", "blocked", "cancelled")),
-                   snap["findings"], snap["files"])
-        if (summary != getattr(self, "_super_last_summary", None)
-                and time.time() - getattr(self, "_super_last_board",
-                                           0.0) >= 4.0):
-            self._super_last_summary = summary
-            self._super_last_board = time.time()
-            self.console.print(self._super_board(snap))
-
-    def _super_board(self, snap: dict) -> Panel:
-        """The live-TV panel: one row per core, exactly what it is doing."""
-        glyphs = {"done": ("✓", C["green"]), "error": ("✗", C["red"]),
-                  "blocked": ("◐", C["yellow"]), "tool": ("⚙", C["orange"]),
-                  "thinking": ("◉", C["cyan"]), "idle": ("·", C["dim"]),
-                  "cancelled": ("⊘", C["dim"])}
-        body = Text()
-        if snap.get("objective"):
-            body.append(f"mission: {snap['objective'][:90]}\n",
-                        style=f"bold {C['fg']}")
-        body.append(f"phase {snap['phase'] or '—'}", style=f"bold {C['pink']}")
-        if snap["round"]:
-            body.append(f"  round {snap['round']}", style=C["yellow"])
-        body.append(f"  ·  plan v{snap['plan_version']}"
-                    f"  ·  findings {snap['findings']}"
-                    f"  ·  sources {snap['sources']}"
-                    f"  ·  files {snap['files']}"
-                    f"  ·  defects {snap['defects']}"
-                    f"  ·  {snap['tokens']:,} tok"
-                    f"  ·  {snap['elapsed']:.0f}s\n\n", style=C["dim"])
-        tick = int(time.time() * 8)
-        for ci, c in enumerate(snap["cores"]):
-            glyph, color = glyphs.get(c["state"], ("?", C["dim"]))
-            body.append(f" {glyph} ", style=f"bold {color}")
-            body.append(f"{c['callsign']:<7}", style=f"bold {C['fg']}")
-            body.append(f"{c['state']:<9}", style=color)
-            if c["tool"]:
-                body.append(f"{c['tool']:<14}", style=C["orange"])
-            else:
-                body.append(" " * 14)
-            if c["state"] in ("thinking", "tool"):
-                # per-core live spinner, offset per row so the 8
-                # spinners don't move in lockstep
-                spin = SPINNER_FRAMES[(tick + ci * 2)
-                                      % len(SPINNER_FRAMES)]
-                body.append(f"{spin} ", style=f"bold {color}")
-                body.append(f"{c['activity'][:50]:<50}", style=C["fg"])
-            else:
-                body.append(f"  {c['activity'][:50]:<50}", style=C["fg"])
-            body.append(f" {c['steps']:>2}s {c['elapsed']:>5.0f}s\n",
-                        style=C["dim"])
-        if snap["board"]:
-            body.append("\n")
-            for line in snap["board"][-4:]:
-                body.append(f" › {line[:96]}\n", style=C["cyan"])
-        spin = self._super_spin() if snap["status"] == "running" else "■"
-        return Panel(body, title=f"🖥  SUPERCOMPUTER — LIVE {spin} "
-                                 f"{snap['elapsed']:.0f}s · "
-                                 f"{self._super_clock()}",
-                     border_style=C["accent"], expand=False, padding=(0, 1))
-
-    def _super_report_panel(self) -> Panel:
-        sc = self.agent.supercomputer
-        m = sc.mission
-        body = Text(sc.format_report(), style=C["fg"])
-        color = (C["green"] if m and m.status == "complete"
-                 else C["yellow"] if m and m.status == "stopped"
-                 else C["red"])
-        return Panel(body, title="🖥  MISSION REPORT", border_style=color,
-                     expand=False, padding=(0, 1))
-
     def _cmd_council(self, arg: str) -> None:
         """Convene an adversarial debate: /council <proposition>."""
         question = arg.strip()
@@ -3051,6 +2709,7 @@ class UI:
     def _run_turn_thread(self, text: str) -> None:
         self._busy = True
         self._cancel_flag.clear()
+        self._turn_start_ts = time.time()
         self._set_status("thinking…")
         self._start_spinner()
         self._last_preview_ts = 0.0
@@ -3469,7 +3128,13 @@ class UI:
         return self._approve_result
 
     def _answer_approve(self, answer: str) -> None:
-        if self._approve_request is None:
+        request = self._approve_request
+        if request is None:
+            return
+        if self._computer_approval_kind is not None:
+            self._approve_result = ("always" if answer == "a" and self._computer_approval_kind == "command"
+                                    else answer in ("y", "a"))
+            request[2].set()
             return
         if answer == "a":
             self.cfg.auto_approve = True
@@ -3477,7 +3142,7 @@ class UI:
             self.print_info("  auto-approve enabled", C["yellow"])
             answer = "y"
         self._approve_result = answer == "y"
-        self._approve_request[2].set()
+        request[2].set()
 
     def _diff_preview(self, tool: Tool, args: dict):
         """Real preview of what the mutation will do — unified diff for
@@ -3549,6 +3214,13 @@ class UI:
             self.cfg.model_id = m.id
             self.cfg.save()
             self._set_flash(f"model → {m.label} ({m.id})", C["green"])
+            # SPEED: pre-warm the connection to the new provider so the
+            # next turn hits a warm socket instantly
+            from .client import prewarm_connection
+            from .config import PROVIDERS
+            p = PROVIDERS.get(m.provider)
+            if p:
+                prewarm_connection(p)
 
         self.overlay = OverlayList("SELECT MODEL", items, current, on_select)
         self.overlay.open()
@@ -3580,10 +3252,9 @@ class UI:
                     f' <style color="{C["dim"]}">{desc}</style>', "")
 
         items = [
-            row("/on", "SUPERCOMPUTER — boot 8 parallel cores"),
-            row("/on <mission>", "run a full mission across all 8 cores"),
-            row("/on status|report|stop", "live board · report · abort"),
-            row("/off", "power the supercomputer down"),
+            row("/on [directory]", "live 8-agent computer workspace"),
+            row("/off", "stop computer mode; return to normal chat"),
+            row("/computer help", "pause, resume, checkpoints, budgets, reports"),
             row("/model", "select model (PgUp/PgDn/Tab to navigate)"),
             row("/effort", "low · medium · high · extrahigh · ultrahigh"),
             row("/goal", "set · prove · close · status · waive · clear"),
@@ -3653,10 +3324,7 @@ class UI:
                 self.print_info("⊘ no interactive terminal — run fullagent "
                                 "in a real TTY, or use headless commands "
                                 "(python main.py --help)", C["yellow"])
-        try:
-            self.agent.supercomputer.shutdown()
-        except Exception:  # noqa: BLE001 — exit must never fail
-            pass
+        self.computer_mode.shutdown()
         self.agent.save_session()
 
     def print_banner(self) -> None:
@@ -3674,7 +3342,7 @@ class UI:
             "██╔════╝██║   ██║██║    ██║   ██╔══██╗██╔════╝ ██╔════╝████╗██║╚══██╔══╝",
             "█████╗  ██║   ██║██║    ██║   ███████║██║  ███╗█████╗  ██╔██╗██║  ██║   ",
             "██╔══╝  ██║   ██║██║    ██║   ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║  ██║   ",
-            "██║     ╚██████╔╝██████╗█████╗██║  ██║╚██████╔╝███████╗██║ ╚████║  ██║   ",
+            "██║     ╚██���███╔╝██████╗█████╗██║  ██║╚██████╔╝███████╗██║ ╚████║  ██║   ",
             "╚═╝      ╚═════╝ ╚═════╝╚════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝  ╚═╝   ",
         ]
         accent_styles = [C["accent"], C["accent"], C["pink"], C["cyan"], C["cyan"], C["pink"]]
@@ -3691,9 +3359,10 @@ class UI:
             # tagline + feature stripe under the ascii (kept ≤74 chars to avoid Panel wrap)
             banner.append("  ◆ FullAgent ", style=f"bold {C['accent']}")
             banner.append(f"v{__version__}", style=f"bold {C['pink']}")
-            banner.append("  ·  Event-Sourced Kernel  ·  Goal Contracts  ·  Crew", style=C["dim"])
+            banner.append("  ·  Event-Sourced Kernel  ·  Goal Contracts  ·  Self-Healing", style=C["dim"])
             banner.append("\n")
-            banner.append("  ⚡ 40+ Commands · 16 Tools · 5 Providers · Real-time Web · Self-Healing", style=C["dim"])
+            n_prov = len(PROVIDERS)
+            banner.append(f"  ⚡ 40+ Commands · 16 Tools · {n_prov} Providers · Real-time Web · Crew & Daemon", style=C["dim"])
             self.console.print(Panel(banner, width=width,
                                      border_style=C["border"], padding=(0, 1),
                                      title=f"[bold {C['accent']}]FullAgent[/]",
@@ -3706,7 +3375,7 @@ class UI:
             logo.append(f" v{__version__}", style=f"bold {C['pink']}")
             logo.append("  ·  advanced terminal AI agent", style=C["dim"])
             logo.append("\n")
-            logo.append("event-sourced kernel · goal contracts · persistent crew · "
+            logo.append("event-sourced kernel · goal contracts · "
                         "self-healing", style=C["dim"])
             self.console.print(Panel(logo, width=width,
                                      border_style=C["border"], padding=(0, 1)))
@@ -3732,9 +3401,7 @@ class UI:
         hints.append("Ctrl+T", style=f"bold {C['cyan']}")
         hints.append(" models · ", style=C["dim"])
         hints.append("Ctrl+E", style=f"bold {C['cyan']}")
-        hints.append(" effort · ", style=C["dim"])
-        hints.append("/crew", style=f"bold {C['pink']}")
-        hints.append(" background subagents", style=C["dim"])
+        hints.append(" effort", style=C["dim"])
         self.console.print(hints)
         self.console.print()
 

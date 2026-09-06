@@ -31,6 +31,9 @@ import time
 from dataclasses import dataclass, field
 
 from .kernel import EventLog
+from ._foundation import get_logger
+
+_log = get_logger("race")
 
 DEFAULT_STRATEGIES = (
     {"id": "direct", "role": "coder",

@@ -36,6 +36,9 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from ._foundation import get_logger
+
+_log = get_logger("goal")
 from dataclasses import dataclass, field
 
 from .kernel import EventLog, fold

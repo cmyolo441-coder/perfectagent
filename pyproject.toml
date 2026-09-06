@@ -18,7 +18,7 @@ dependencies = [
 fullagent = "fullagent.__main__:main"
 
 [tool.setuptools]
-packages = ["fullagent"]
+packages = ["fullagent", "fullagent.computer"]
 
 [tool.setuptools.dynamic]
 version = {attr = "fullagent.__version__"}

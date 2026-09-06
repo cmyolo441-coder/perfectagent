@@ -29,6 +29,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("mutate")
 
 MAX_MUTANTS = 40          # cap per run so a suite never explodes
 

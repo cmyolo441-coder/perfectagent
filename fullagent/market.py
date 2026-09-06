@@ -31,6 +31,9 @@ from dataclasses import dataclass, field
 
 from .kernel import EventLog, fold
 from .team import ROLES
+from ._foundation import get_logger
+
+_log = get_logger("market")
 
 # role pace priors: abstract tool-steps per typical task (lower = faster)
 _PACE = {"coder": 1.30, "tester": 1.10, "researcher": 0.90,

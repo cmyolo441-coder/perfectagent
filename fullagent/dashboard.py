@@ -19,6 +19,9 @@ from __future__ import annotations
 import time
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("dashboard")
 
 # panels the dashboard renders, in display order
 PANELS = ("cost", "goal", "agents", "router", "speculator", "memory",

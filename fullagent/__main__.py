@@ -167,6 +167,13 @@ def main() -> int:
         from . import __version__
         print(f"fullagent v{__version__}")
         return 0
+    if argv and argv[0] in ("--help", "-h"):
+        print(__doc__)
+        print("    python main.py computer --help   eight-agent computer mode")
+        return 0
+    if argv and argv[0] == "computer":
+        from .computer.cli import main as computer_main
+        return computer_main(argv[1:])
     if argv:
         return _headless(argv)
 

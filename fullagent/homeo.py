@@ -30,6 +30,9 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .kernel import EventLog
+from ._foundation import get_logger
+
+_log = get_logger("homeo")
 
 _WINDOW = 120              # events considered "now"
 _ERROR_RATE_MAX = 0.35     # more than this = symptom

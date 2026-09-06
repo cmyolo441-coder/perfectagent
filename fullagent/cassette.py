@@ -20,6 +20,9 @@ import threading
 from pathlib import Path
 from typing import Any
 import copy
+from ._foundation import get_logger
+
+_log = get_logger("cassette")
 
 
 def _canonical(obj: Any) -> str:

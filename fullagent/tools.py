@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import config
+from ._foundation import get_logger, ToolError, validate_path, content_hash
+
+_log = get_logger("tools")
 
 # ---------------------------------------------------------------------------
 # Tool definition

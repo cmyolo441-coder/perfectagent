@@ -27,6 +27,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("taint")
 
 # Sources: calls whose return value is attacker/user controlled.
 DEFAULT_SOURCES = frozenset(

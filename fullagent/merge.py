@@ -36,6 +36,9 @@ import hashlib
 from dataclasses import dataclass, field
 
 from .kernel import EventLog, Event
+from ._foundation import get_logger
+
+_log = get_logger("merge")
 
 _CONTENT_TYPES = ("user.message", "assistant.message", "tool.call",
                   "tool.result", "fact.learned", "memory.episode")

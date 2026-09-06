@@ -37,6 +37,9 @@ from typing import Callable
 
 from .kernel import EventLog, fold
 from .team import ROLES
+from ._foundation import get_logger
+
+_log = get_logger("compiler")
 
 # deterministic per-role cost estimates (abstract units: tool budget the
 # role typically burns per item — writers cost more than readers)

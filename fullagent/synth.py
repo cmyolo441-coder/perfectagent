@@ -30,6 +30,9 @@ import threading
 from dataclasses import dataclass, field
 
 from .kernel import EventLog
+from ._foundation import get_logger
+
+_log = get_logger("synth")
 
 _CALL_TIMEOUT_S = 5.0  # per-example wall clock; generated code must halt
 

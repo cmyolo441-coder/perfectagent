@@ -23,6 +23,9 @@ import re
 from dataclasses import dataclass, field
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("healer")
 
 # ---------------------------------------------------------------------------
 # Root-cause taxonomy — pattern -> (root_cause, suggested_fix)

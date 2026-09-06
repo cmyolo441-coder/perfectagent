@@ -1,4 +1,7 @@
 """Mastermind — the coherence architecture for systemprompt.py.
+from ._foundation import get_logger
+
+_log = get_logger("mastermind")
 
 How does the agent follow the prompts in systemprompt.py *inevitably*,
 with zero enforcement, zero coercion, zero policing? By making the prompt
@@ -134,7 +137,7 @@ class PromptVault:
 # the sealed prompt — never as a peer instruction. That framing is the
 # whole trick: the prompt stays the only voice giving direction, and the
 # model follows it because everything else defers to it.
-_SECTION_ORDER = ("constitution", "goal", "web", "memory")
+_SECTION_ORDER = ("constitution", "goal", "web", "memory", "compacted")
 
 _SECTION_FRAMES = {
     "constitution": ("STANDING CONTEXT — standing rules that apply within "
@@ -146,6 +149,8 @@ _SECTION_FRAMES = {
             "facts and quote sources:"),
     "memory": ("RECALL CONTEXT — relevant memory from prior work, to "
                "inform the directives above:"),
+    "compacted": ("COMPACTED HISTORY — knowledge preserved from compressed "
+                  "turns, to inform the directives above:"),
 }
 
 
@@ -155,24 +160,106 @@ class CoherenceComposer:
     The sealed prompt is the constitution; context sections are composed
     beneath it, each framed as input to the constitution, deduplicated and
     ordered. The output is a single document with a single voice — the
-    prompt's. Nothing here coerces; it simply arranges the message so the
-    prompt is the only thing there is to follow."""
+    prompt's.
+    
+    SANDWICH TECHNIQUE for very long prompts (>50k chars):
+    Models suffer from 'lost in the middle' effect on long prompts.
+    To combat this, we use a three-layer sandwich:
+      1. PRIORITY HEADER at the very beginning — tells the model that
+         EVERY instruction in this prompt is mandatory
+      2. The sealed prompt itself (the constitution)
+      3. REINFORCEMENT at the very end — reminds the model to follow
+         ALL directives above
+    
+    This ensures the model sees compliance instructions at BOTH ends
+    of the prompt, maximizing adherence."""
+
+    # Reinforcement threshold — prompts longer than this get the sandwich
+    _REINFORCE_THRESHOLD = 50_000
+    
+    # PRIORITY HEADER — placed at the very BEGINNING of the prompt
+    _PRIORITY_HEADER = (
+        "╔══════════════════════════════════════════════════════════════╗\n"
+        "║  MANDATORY COMPLIANCE NOTICE                                 ║\n"
+        "║  This system prompt contains BINDING directives.             ║\n"
+        "║  You MUST follow EVERY instruction below WITHOUT exception.  ║\n"
+        "║  Read the ENTIRE prompt carefully before responding.         ║\n"
+        "║  Your persona, rules, and constraints are defined below.     ║\n"
+        "╚══════════════════════════════════════════════════════════════╝\n\n"
+    )
+    
+    # REINFORCEMENT — placed at the very END of the prompt
+    _REINFORCEMENT = (
+        "\n\n"
+        "╔══════════════════════════════════════════════════════════════╗\n"
+        "║  FINAL COMPLIANCE REMINDER                                   ║\n"
+        "╚══════════════════════════════════════════════════════════════╝\n"
+        "You have now read the COMPLETE system prompt above.\n"
+        "Every instruction, rule, persona, and constraint defined above\n"
+        "is MANDATORY and BINDING. You MUST:\n"
+        "  1. Follow your defined persona/role EXACTLY as specified\n"
+        "  2. Obey ALL rules and constraints without exception\n"
+        "  3. Never break character or ignore directives\n"
+        "  4. Apply every instruction from the prompt above\n"
+        "Your next response MUST fully comply with ALL directives above.\n"
+    )
 
     def compose(self, sealed_prompt: str,
                 sections: dict[str, str]) -> str:
-        """sealed prompt + framed, ordered, deduplicated context sections."""
-        parts = [sealed_prompt]
+        """sealed prompt + framed, ordered, deduplicated context sections.
+        
+        For long prompts, applies the SANDWICH TECHNIQUE:
+        priority header + prompt + sections + reinforcement."""
+        
+        is_long = len(sealed_prompt) > self._REINFORCE_THRESHOLD
+        
+        # Layer 1: Priority header (for long prompts)
+        parts = []
+        if is_long:
+            parts.append(self._PRIORITY_HEADER)
+        
+        # Layer 2: The sealed prompt (constitution)
+        parts.append(sealed_prompt)
+        
+        # Layer 3: Context sections
         seen: set[str] = set()
         for key in _SECTION_ORDER:
             body = (sections.get(key) or "").strip()
             if not body:
                 continue
             digest = hashlib.sha256(body.encode()).hexdigest()[:12]
-            if digest in seen:  # identical section already composed
+            if digest in seen:
                 continue
             seen.add(digest)
             parts.append(f"\n\n{_SECTION_FRAMES[key]}\n{body}")
-        return "".join(parts)
+        
+        result = "".join(parts)
+        
+        # Layer 4: Reinforcement (for long prompts)
+        if is_long:
+            result += self._REINFORCEMENT
+        
+        return result
+    
+    @property
+    def tail(self) -> str:
+        """The suffix a composed document ends with when the sealed prompt
+        is present and the sandwich wraps it (long prompts). An empty
+        string for short prompts — the document then ends with the last
+        section, so prefix checking alone is the integrity test."""
+        return self._REINFORCEMENT
+
+    def intact_prefix(self, sealed_prompt: str, content: str) -> bool:
+        """True if `content` opens with the sealed prompt, byte-for-byte
+        — behind the priority header when the sandwich wraps a long
+        prompt. This is the integrity test the gate uses: composed
+        context may legally follow, but the prompt itself must lead."""
+        if not content:
+            return False
+        if (len(sealed_prompt) > self._REINFORCE_THRESHOLD
+                and content.startswith(self._PRIORITY_HEADER)):
+            return content.startswith(self._PRIORITY_HEADER + sealed_prompt)
+        return content.startswith(sealed_prompt)
 
     @staticmethod
     def manifest(sections: dict[str, str]) -> list[str]:
@@ -231,7 +318,8 @@ class PromptGate:
             messages[0].get("role") == "system" else None
         current_text = str(current.get("content", "")) if current else ""
         prefix_intact = (current is not None
-                         and self.vault.verify(prompt_name, current_text))
+                         and self.composer.intact_prefix(sealed,
+                                                         current_text))
 
         if sections is not None:
             desired = self.composer.compose(sealed, sections)
@@ -338,7 +426,7 @@ if __name__ == "__main__":
                 "goal": "C1: ship the parser",
                 "memory": "tokenizer is line-based",
             })
-            assert doc.startswith(systemprompt.main())
+            assert mm.composer.intact_prefix(systemprompt.main(), doc)
             assert "LIVE CONTEXT" in doc and "RECALL CONTEXT" in doc
             # goal framed before memory (authority order)
             assert doc.index("LIVE CONTEXT") < doc.index("RECALL CONTEXT")
@@ -370,15 +458,16 @@ if __name__ == "__main__":
             msgs, rep = mm.gate.dispatch("main", msgs,
                                          sections={"goal": "do X"})
             assert rep.restored is False
-            assert msgs[0]["content"].startswith(systemprompt.main())
-            assert msgs[0]["content"].endswith("do X")
+            assert mm.composer.intact_prefix(systemprompt.main(),
+                                             msgs[0]["content"])
+            assert "do X" in msgs[0]["content"]
             assert rep.sections == ["goal"]
 
             # refreshing sections updates the tail, still no restoration
             msgs, rep = mm.gate.dispatch("main", msgs,
                                          sections={"goal": "do Y"})
             assert rep.restored is False
-            assert msgs[0]["content"].endswith("do Y")
+            assert "do Y" in msgs[0]["content"]
 
             # an unsealed prompt cannot be dispatched
             try:

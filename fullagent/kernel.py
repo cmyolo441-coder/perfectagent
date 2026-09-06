@@ -35,6 +35,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
+from ._foundation import get_logger, KernelError, content_hash
+
+_log = get_logger("kernel")
+
 # ---------------------------------------------------------------------------
 # Event
 # ---------------------------------------------------------------------------
@@ -532,7 +536,8 @@ class EventLog:
 
 # tool name -> whether it mutates the filesystem
 _MUTATING_TOOLS = {"write_file", "edit_file", "create_directory",
-                   "copy_path", "move_path", "delete_path"}
+                   "copy_path", "move_path", "delete_path", "run_command",
+                   "live_shell", "apply_patch"}
 
 # Event types of the advanced subsystems folded into State.advanced_events
 ADVANCED_EVENT_TYPES = frozenset({

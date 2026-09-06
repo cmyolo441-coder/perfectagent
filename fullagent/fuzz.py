@@ -24,6 +24,9 @@ import string
 from dataclasses import dataclass, field
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("fuzz")
 
 MAX_SHRINK_STEPS = 60
 

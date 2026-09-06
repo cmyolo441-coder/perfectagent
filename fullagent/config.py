@@ -51,7 +51,7 @@ SESSIONS_DIR = APP_DIR / "sessions"
 EVENT_LOG_FILE = APP_DIR / "eventlog.jsonl"
 
 DEFAULT_TIMEOUT = 300.0
-MAX_TOOL_ITERATIONS = 80
+MAX_TOOL_ITERATIONS = 200
 MAX_TOOL_OUTPUT_CHARS = 24_000
 # One output ceiling for every effort level: 200k tokens.
 MAX_TOKENS = 200_000
@@ -110,7 +110,7 @@ PROVIDERS: dict[str, Provider] = {
         base_url="https://api.tokenrouter.com/v1",
         api_key=os.environ.get(
             "TOKENROUTER_API_KEY",
-            "sk-cTiHfKWRCDK6EO64AuloBS09hQGu06careTB2oQ9OETBe2wK",
+            "",
         ),
         color="#ffb86c",
     ),
@@ -140,9 +140,39 @@ PROVIDERS: dict[str, Provider] = {
         base_url="https://integrate.api.nvidia.com/v1",
         api_key=os.environ.get(
             "NVIDIA_API_KEY",
-            "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",
+            "",
         ),
         color="#76b900",
+    ),
+    "bai": Provider(
+        key="bai",
+        name="B.AI",
+        base_url="https://api.b.ai/v1",
+        api_key=os.environ.get(
+            "BAI_API_KEY",
+            "sk-hm51wsk2klugg9v95lwvm9prtsmtekd2",
+        ),
+        color="#ff79c6",
+    ),
+    "kiosapi": Provider(
+        key="kiosapi",
+        name="KiosAPI Router",
+        base_url="https://router.kiosapi.com/v1",
+        api_key=os.environ.get(
+            "KIOSAPI_API_KEY",
+            "sk-cFXQ576lsIctpudkYD5lPniF5UgHGLy1nKeXDscCEvK1LMZV",
+        ),
+        color="#ff5555",
+    ),
+    "xkiro": Provider(
+        key="xkiro",
+        name="XKiro",
+        base_url="https://api.xkiro.com/v1",
+        api_key=os.environ.get(
+            "XKIRO_API_KEY",
+            "sk-xt-866c0efd3fe7bb9eb65e9477102211b017dacd9a10db6747",
+        ),
+        color="#00e5ff",
     ),
 }
 
@@ -161,20 +191,25 @@ MODELS: list[Model] = [
     Model("muse-spark-1.2-contributor-free", "opencode",
           "Muse Spark 1.2", tag="FREE", tag_color="green",
           supports_tools=True, supports_reasoning=True),
-    Model("opencode/muse-spark-1.2-contributor-free", "opencode",
-          "Muse Spark 1.2", tag="FREE", tag_color="green",
+    Model("muse-spark-1.3-contributor-free", "opencode",
+          "Muse Spark 1.3", tag="FREE", tag_color="green",
           supports_tools=True, supports_reasoning=True),
     # supports_reasoning=True means the backend understands a reasoning
     # switch — the client uses it to send an EXPLICIT "none" (thinking
     # off globally), not to turn thinking on.
     Model("qwen/qwen3.8-max-free", "tokenrouter", "Qwen3.8 Max", tag="FREE",
-          tag_color="green", supports_reasoning=True),
+          tag_color="green", supports_reasoning=True,
+          context_window=1_000_000),
     Model("deepseek-ai/DeepSeek-V3.2", "tokenrouter", "DeepSeek V3.2",
           supports_reasoning=False, context_window=131_072),
     Model("deepseek/deepseek-v4-pro-0813-free", "tokenrouter",
           "DeepSeek V4 Pro 0813", tag="FREE", tag_color="green",
           supports_tools=True, supports_reasoning=True,
           context_window=131_072),
+    Model("deepseek-v4-flash", "bai",
+          "DeepSeek V4 Flash", tag="FAST", tag_color="cyan",
+          supports_tools=True, supports_reasoning=True,
+          context_window=1_000_000),
     Model("moonshotai/Kimi-K2-Instruct", "tokenrouter", "Kimi K2",
           context_window=131_072),
     Model("agnes-2.5-flash", "agnes", "Agnes 2.5 Flash", tag="FAST",
@@ -186,6 +221,41 @@ MODELS: list[Model] = [
           "DeepSeek V4 Pro 0813", tag="NIM", tag_color="green",
           supports_tools=True, supports_reasoning=True,
           context_window=1_048_576),
+    Model("qwen3.8-flash", "bai", "Qwen 3.8 Flash", tag="FAST",
+          tag_color="cyan", supports_tools=True, supports_reasoning=True,
+          context_window=1_000_000),
+    Model("glm-5.3-flash", "bai", "GLM 5.3 Flash", tag="FAST",
+          tag_color="cyan", supports_tools=True, supports_reasoning=True,
+          context_window=1_000_000),
+    Model("z-ai/glm-5.3-free", "tokenrouter", "GLM 5.3 Free", tag="FREE",
+          tag_color="green", supports_tools=True, supports_reasoning=True,
+          context_window=1_000_000),
+    Model("grok-composer-2.5-fast", "kiosapi", "Grok Composer 2.5 Fast",
+          tag="FAST", tag_color="cyan", supports_tools=True,
+          supports_reasoning=True, context_window=256_000),
+    Model("grok-4.6", "kiosapi", "Grok 4.6",
+          tag="NEW", tag_color="yellow", supports_tools=True,
+          supports_reasoning=True, context_window=256_000),
+    Model("oc/muse-spark-1.2-contributor", "kiosapi",
+          "Muse Spark 1.2 Contributor", tag="FREE", tag_color="green",
+          supports_tools=True, supports_reasoning=True,
+          context_window=262_144),
+    Model("qwen/qwen3.7-max:free", "xkiro",
+          "Qwen3.7 Max", tag="FREE", tag_color="green",
+          supports_tools=True, supports_reasoning=True,
+          context_window=1_000_000),
+    Model("qwen/qwen3.8-max:free", "xkiro",
+          "Qwen3.8 Max", tag="FREE", tag_color="green",
+          supports_tools=True, supports_reasoning=True,
+          context_window=1_000_000),
+    Model("qwen/qwen3.7-plus:free", "xkiro",
+          "Qwen3.7 Plus", tag="FREE", tag_color="green",
+          supports_tools=True, supports_reasoning=True,
+          context_window=1_000_000),
+    Model("minimax/minimax-m2.7-highspeed:free", "xkiro",
+          "MiniMax M2.7 Highspeed", tag="FREE", tag_color="green",
+          supports_tools=True, supports_reasoning=True,
+          context_window=204_800),
 ]
 
 DEFAULT_MODEL_ID = "mimo-v2.5-free"
@@ -305,3 +375,71 @@ def ensure_dirs() -> None:
             d.mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# SPEED: Custom model hot-loading — add models via models.json, instantly
+# available without code changes. Format:
+# {
+#   "providers": {"myprov": {"name": "My Provider", "base_url": "...",
+#                             "api_key": "sk-...", "color": "#fff"}},
+#   "models": [{"id": "my-model", "provider": "myprov", "label": "My Model",
+#               "tag": "FAST", "supports_tools": true}]
+# }
+# ---------------------------------------------------------------------------
+MODELS_FILE = APP_DIR / "models.json"
+
+
+def load_custom_models() -> None:
+    """Hot-load custom providers and models from models.json. Called at
+    import time — any model defined there is instantly available in the
+    model selector, /model command, and failover logic. Zero restart needed:
+    edit the file, run /models reload, done."""
+    global MODELS, PROVIDERS
+    if not MODELS_FILE.exists():
+        return
+    try:
+        data = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return
+        # merge custom providers
+        for key, pdata in (data.get("providers") or {}).items():
+            if not isinstance(pdata, dict):
+                continue
+            PROVIDERS[key] = Provider(
+                key=str(key),
+                name=str(pdata.get("name", key)),
+                base_url=str(pdata.get("base_url", "")),
+                api_key=str(pdata.get("api_key", "") or
+                            os.environ.get(f"{key.upper()}_API_KEY", "")),
+                color=str(pdata.get("color", "#8be9fd")),
+            )
+        # merge custom models (skip duplicates by id)
+        existing_ids = {m.id for m in MODELS}
+        for mdata in (data.get("models") or []):
+            if not isinstance(mdata, dict):
+                continue
+            mid = str(mdata.get("id", "")).strip()
+            if not mid or mid in existing_ids:
+                continue
+            prov = str(mdata.get("provider", ""))
+            if prov not in PROVIDERS:
+                continue
+            MODELS.append(Model(
+                id=mid,
+                provider=prov,
+                label=str(mdata.get("label", mid)),
+                tag=str(mdata.get("tag", "")),
+                tag_color=str(mdata.get("tag_color", "grey62")),
+                supports_tools=bool(mdata.get("supports_tools", True)),
+                supports_reasoning=bool(mdata.get("supports_reasoning", False)),
+                context_window=int(mdata.get("context_window",
+                                             DEFAULT_CONTEXT_WINDOW)),
+            ))
+            existing_ids.add(mid)
+    except (OSError, ValueError, TypeError, KeyError):
+        pass  # a bad models.json never kills the app
+
+
+# hot-load at import time — custom models are instantly available
+load_custom_models()

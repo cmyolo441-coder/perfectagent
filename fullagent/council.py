@@ -31,6 +31,9 @@ import re
 from dataclasses import dataclass, field
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("council")
 
 ROLES = ("thesis", "antithesis")
 MAX_POSITION_CHARS = 1200

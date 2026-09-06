@@ -25,6 +25,9 @@ import time
 from dataclasses import dataclass, field
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("daemon")
 
 MISSION_STATES = ("RUNNING", "BLOCKED", "DONE", "ABANDONED")
 STEP_STATES = ("PENDING", "RUNNING", "DONE", "FAILED", "SKIPPED")

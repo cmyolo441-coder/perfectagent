@@ -31,6 +31,9 @@ import re
 from dataclasses import dataclass, field
 
 from .kernel import EventLog
+from ._foundation import get_logger
+
+_log = get_logger("causal")
 
 _MIN_STRATUM = 3          # below this a stratum is too thin to trust
 _MIN_TOTAL = 12           # below this nothing is claimed at all

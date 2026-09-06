@@ -32,6 +32,9 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 
 from .kernel import EventLog
+from ._foundation import get_logger
+
+_log = get_logger("dual")
 
 _ESCALATE_BAR = 0.62
 # A hard cap on the answer cache. Without it, a long-lived agent

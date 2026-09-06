@@ -36,6 +36,9 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("brain")
 
 STORES = ("working", "episodic", "semantic", "procedural")
 

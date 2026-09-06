@@ -24,6 +24,9 @@ import re
 from dataclasses import dataclass, field
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("semantic")
 
 DIM = 256          # feature-hash width — plenty for a session corpus
 _TOKEN_RE = re.compile(r"[a-z0-9_]+")

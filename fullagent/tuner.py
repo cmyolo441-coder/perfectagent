@@ -26,6 +26,9 @@ import random
 from dataclasses import dataclass, field
 
 from .kernel import EventLog
+from ._foundation import get_logger
+
+_log = get_logger("tuner")
 
 _GAMMA = 0.25          # fraction of history counted as GOOD
 _EPSILON = 0.10        # uniform exploration probability

@@ -28,6 +28,9 @@ import zlib
 from pathlib import Path
 
 from .kernel import EventLog
+from ._foundation import get_logger
+
+_log = get_logger("snapshots")
 
 
 def _hash_bytes(data: bytes) -> str:

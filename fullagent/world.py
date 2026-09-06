@@ -32,6 +32,9 @@ import re
 from dataclasses import dataclass, field
 
 from .kernel import EventLog
+from ._foundation import get_logger
+
+_log = get_logger("world")
 
 _IMPORT_RE = re.compile(
     r"^\s*(?:from|import)\s+([a-zA-Z0-9_.]+)", re.M)

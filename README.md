@@ -1,3 +1,5 @@
+> **New in v3.2: `/on` live computer mode** — eight concurrent API-backed specialists, shared planning, owned-file writes, real command output, approval gates, bounded repair and recovery. Start with [COMPUTER_MODE.md](COMPUTER_MODE.md); see [VERIFICATION.md](VERIFICATION.md) for actual test scope. The legacy Crew stays serial. Configure your own provider keys; long embedded key defaults were removed. **This update is a local source bundle, not a published GitHub release**—older binary/curl installers below may fetch an older version; install this ZIP using the new guide.
+
 <div align="center">
 
 ```
@@ -9,7 +11,7 @@
 ╚═╝      ╚═════╝ ╚═════╝╚════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝  ╚═╝
 ```
 
-<h1>FullAgent <sup><code>v3.1.0</code></sup></h1>
+<h1>FullAgent <sup><code>v3.2.0</code></sup></h1>
 
 **Advanced Terminal AI Agent — Pure Python, Real Code, World-Class TUI**
 
@@ -60,7 +62,7 @@ Tokens stream live above the box, tool calls appear as `⚙ name args` with
 <summary><b>🖼️ Terminal Banner Preview (after <code>python main.py</code>)</b></summary>
 
 ```
- ◆ FullAgent v3.1.0  ·  advanced terminal AI agent
+ ◆ FullAgent v3.2.0  ·  advanced terminal AI agent
  event-sourced kernel · goal contracts · persistent crew · self-healing
  ──────────────────────────────────────────────────────────────────
  ❯ model  MiMo v2.5 FREE   effort  high   autonomy  L4   session  a1b2c3d4
@@ -231,11 +233,12 @@ tokens, temperature, and reasoning effort.
 
 ## Models & providers
 
-Five OpenAI-compatible providers are built in:
+Six OpenAI-compatible providers are built in:
 
 - **OpenCode Zen** (`https://opencode.ai/zen/v1`) — mimo-v2.5-free,
   big-pickle, grok-code-fast-1, claude-sonnet-4-5, claude-opus-4-6,
-  gemini-3.1-pro, gpt-5.2, muse-spark-1.2-contributor-free
+  gemini-3.1-pro, gpt-5.2, muse-spark-1.2-contributor-free,
+  muse-spark-1.3-contributor-free
 - **TokenRouter** (`https://api.tokenrouter.com/v1`) — qwen/qwen3.8-max-free,
   deepseek-ai/DeepSeek-V3.2, deepseek/deepseek-v4-pro-0813-free,
   moonshotai/Kimi-K2-Instruct
@@ -244,6 +247,8 @@ Five OpenAI-compatible providers are built in:
 - **ZenMux** (`https://zenmux.ai/api/v1`) — dots-studio/dots3-note-prev
 - **NVIDIA NIM** (`https://integrate.api.nvidia.com/v1`) —
   deepseek-ai/deepseek-v4-pro-0813 (1M context, tool-calling, reasoning)
+- **KiosAPI Router** (`https://router.kiosapi.com/v1`) —
+  grok-composer-2.5-fast, grok-4.6, oc/muse-spark-1.2-contributor
 
 API keys ship as built-in defaults so the app works out of the box;
 environment variables always take precedence if you want to use your
@@ -251,7 +256,7 @@ own:
 
 ```bash
 export OPENCODE_API_KEY=***      # OpenCode Zen (default provider)
-# and/or: TOKENROUTER_API_KEY, AGNES_API_KEY, ZENMUX_API_KEY, NVIDIA_API_KEY
+# and/or: TOKENROUTER_API_KEY, AGNES_API_KEY, ZENMUX_API_KEY, NVIDIA_API_KEY, KIOSAPI_API_KEY
 ```
 
 > ⚠️ The built-in keys live in git history — if you push this repo

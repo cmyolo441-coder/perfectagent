@@ -25,6 +25,9 @@ import sys
 from pathlib import Path
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("forge")
 
 # toolchains whose versions can change behaviour
 _PROBED_TOOLS = ("git", "node", "docker", "gcc", "make")

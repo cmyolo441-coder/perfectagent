@@ -19,6 +19,9 @@ import time
 from datetime import datetime
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("report")
 
 INTERESTING = ("user.message", "assistant.message", "tool.call",
                "tool.result", "judge.verdict", "clause.proven",

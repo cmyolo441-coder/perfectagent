@@ -34,6 +34,9 @@ from typing import Callable
 from . import systemprompt
 from .kernel import EventLog, fold
 from .team import MAX_WORKERS
+from ._foundation import get_logger
+
+_log = get_logger("evolution")
 
 # a candidate must beat the incumbent by this margin to deploy
 DEPLOY_MARGIN = 0.10

@@ -28,6 +28,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("kgraph")
 
 # entity kinds
 KINDS = ("module", "function", "class", "file", "goal", "episode", "fact")

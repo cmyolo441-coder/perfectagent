@@ -30,6 +30,9 @@ from dataclasses import dataclass, field
 from itertools import permutations
 
 from .kernel import EventLog
+from ._foundation import get_logger
+
+_log = get_logger("formal")
 
 _MAX_TRACES = 64          # plan- enumeration ceiling (combinatorics guard)
 
@@ -144,14 +147,17 @@ def trace_from_events(events) -> list[set[str]]:
             preds.add("snapshot")
         elif t == "tool.call":
             name = str(d.get("name", ""))
-            if name in ("write_file", "edit_file", "create_directory"):
+            if name in ("write_file", "edit_file", "create_directory",
+                        "copy_path", "move_path", "run_command",
+                        "live_shell", "apply_patch"):
                 preds.add("write")
             elif name == "delete_path":
                 preds.add("delete")
         elif t == "tool.result":
             name = str(d.get("name", ""))
             if name in ("write_file", "edit_file", "create_directory",
-                        "delete_path"):
+                        "delete_path", "copy_path", "move_path",
+                        "run_command", "live_shell", "apply_patch"):
                 preds.add("verify")
         elif t == "judge.verdict":
             preds.add("verify")

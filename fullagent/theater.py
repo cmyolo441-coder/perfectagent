@@ -26,6 +26,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("theater")
 
 _MAX_CF_REPLAY = 400      # safety ceiling for counterfactual replays
 

@@ -34,6 +34,9 @@ import re
 from dataclasses import dataclass, field
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("debate")
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _TRUST_MIN, _TRUST_MAX = 0.05, 0.95

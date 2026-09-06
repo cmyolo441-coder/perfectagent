@@ -21,6 +21,8 @@ jobs:
         run: pip install -r requirements.txt
       - name: Compile check
         run: python -m compileall -q fullagent
+      - name: Computer-mode regression tests
+        run: python -m unittest discover -s tests -v
       - name: Run every module self-test
         run: |
           fail=0

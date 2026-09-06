@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import ast
 import hashlib
+from ._foundation import get_logger
+
+_log = get_logger("nexus")
 from dataclasses import dataclass, field
 from pathlib import Path
 

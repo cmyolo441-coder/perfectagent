@@ -23,6 +23,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("speculate")
 
 # The ONLY tools speculation may ever run. Read-only by construction.
 SPECULATIVE_TOOLS = ("read_file", "list_dir", "file_info",

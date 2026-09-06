@@ -36,6 +36,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .kernel import EventLog
+from ._foundation import get_logger
+
+_log = get_logger("workflows")
 
 _NAME_RE = re.compile(r"^[\w][\w.-]{0,63}$")
 

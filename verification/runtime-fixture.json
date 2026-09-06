@@ -1,0 +1,7 @@
+{
+  "scope": "Linux deterministic orchestration fixture, not an actual 4 GB hardware or live model benchmark",
+  "peak_parallel_fixture_requests": 8,
+  "peak_process_rss_mib": 44.33,
+  "status": "completed",
+  "source": "resource.getrusage(RUSAGE_SELF); includes Python, Pillow and fixture overhead"
+}

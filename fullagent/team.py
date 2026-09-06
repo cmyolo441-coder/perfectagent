@@ -1,7 +1,7 @@
 """Team — the shared worker-subagent substrate.
 
-The parallel fan-out machinery is gone: every subagent now runs through
-the persistent CREW (crew.py), which is the ONLY way to execute a worker.
+Legacy subsystem workers run through the persistent serial CREW (crew.py).
+The /on computer mode has its own explicitly bounded parallel scheduler.
 This file keeps the pieces the whole system shares:
 
     ROLES               role -> tool whitelist + write permission
@@ -25,6 +25,9 @@ import time
 from dataclasses import dataclass, field
 
 from .client import APIError, chat_blocking, shrink_tool_outputs
+from ._foundation import get_logger
+
+_log = get_logger("team")
 
 MAX_WORKER_STEPS = 96      # tool-loop budget per worker (big-project grade)
 MAX_WORKERS = 8            # roster ceiling; baked into worker prompts

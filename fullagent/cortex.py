@@ -23,6 +23,9 @@ import math
 from dataclasses import dataclass, field
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("cortex")
 
 NODE_KINDS = ("READ", "WRITE", "EXEC", "VERIFY", "ASK", "RESEARCH",
               "REFACTOR")

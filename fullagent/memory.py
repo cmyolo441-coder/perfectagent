@@ -15,6 +15,9 @@ Design (pure Python, stdlib only):
 from __future__ import annotations
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("memory")
 
 # Rough cap for one field rendered into context_block (~400 tokens total).
 _FIELD_CHARS = 120

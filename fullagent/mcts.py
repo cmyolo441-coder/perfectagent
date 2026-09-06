@@ -29,6 +29,9 @@ import time
 from dataclasses import dataclass, field
 
 from .kernel import EventLog
+from ._foundation import get_logger
+
+_log = get_logger("mcts")
 
 _EXPLORATION = 1.41              # sqrt(2) — the classic UCB constant
 _MAX_CHILDREN_EXPANSION = 8

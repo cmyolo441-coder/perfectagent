@@ -34,6 +34,9 @@ from pathlib import Path
 from typing import Callable
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("judge")
 
 # ---------------------------------------------------------------------------
 # Verdict

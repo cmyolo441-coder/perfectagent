@@ -27,6 +27,9 @@ import re
 from dataclasses import dataclass, field
 
 from .kernel import EventLog, fold
+from ._foundation import get_logger
+
+_log = get_logger("router")
 
 # ---------------------------------------------------------------------------
 # Capability / cost table
@@ -59,9 +62,9 @@ MODEL_TABLE: dict[str, dict] = {
     "muse-spark-1.2-contributor-free": {"capability": 0.82, "cost_in": 0.0,
                                        "cost_out": 0.0, "tools": True,
                                        "reasoning": True},
-    "opencode/muse-spark-1.2-contributor-free": {"capability": 0.82, "cost_in": 0.0,
-                                               "cost_out": 0.0, "tools": True,
-                                               "reasoning": True},
+    "muse-spark-1.3-contributor-free": {"capability": 0.84, "cost_in": 0.0,
+                                       "cost_out": 0.0, "tools": True,
+                                       "reasoning": True},
     "qwen/qwen3.8-max-free":     {"capability": 0.70, "cost_in": 0.0,
                                   "cost_out": 0.0, "tools": True,
                                   "reasoning": True},
@@ -81,6 +84,15 @@ MODEL_TABLE: dict[str, dict] = {
                                          "cost_in": 0.000435,
                                          "cost_out": 0.00087, "tools": True,
                                          "reasoning": True},
+    "grok-composer-2.5-fast":   {"capability": 0.80, "cost_in": 0.0,
+                                 "cost_out": 0.0, "tools": True,
+                                 "reasoning": True},
+    "grok-4.6":                  {"capability": 0.84, "cost_in": 0.0,
+                                 "cost_out": 0.0, "tools": True,
+                                 "reasoning": True},
+    "oc/muse-spark-1.2-contributor": {"capability": 0.82, "cost_in": 0.0,
+                                      "cost_out": 0.0, "tools": True,
+                                      "reasoning": True},
 }
 
 # the strongest model in the table — the escalation ceiling

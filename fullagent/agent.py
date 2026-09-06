@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -32,6 +33,7 @@ from typing import Any, Callable
 
 from . import config
 from . import systemprompt
+from ._foundation import get_logger, AgentError, clamp
 from .autopilot import AutoPilot, RouteDecision
 from .cassette import Cassette
 from .client import (APIError, TurnCancelled, assistant_message,
@@ -42,11 +44,12 @@ from .attention import AttentionEconomy
 from .bandit import BanditRouter
 from .brain import Brain
 from .causal import CausalEngine
+
+_log = get_logger("agent")
 from .ci import CIPilot
 from .compiler import IntentCompiler, default_drafter
 from .cortex import Budget, BudgetGovernor, LoopDetector
 from .council import Council
-from .crew import Crew, CrewError
 from .debate import DebateTournament
 from .dual import DualProcess
 from .evolution import EvolutionEngine, default_benchmark
@@ -81,7 +84,6 @@ from .semantic import SemanticMemory
 from .skills import SkillForge
 from .snapshots import SnapshotStore
 from .speculate import Speculator, SPECULATIVE_TOOLS
-from .supercomputer import Supercomputer, SupercomputerError
 from .race import RacingUniverses
 from .synth import ProgramSynthesizer, SynthSpec, default_generator
 from .taint import StaticAnalyzer
@@ -106,7 +108,8 @@ AUTONOMY_LEVELS = {
 }
 
 _MUTATING_TOOLS = {"write_file", "edit_file", "create_directory",
-                   "copy_path", "move_path", "delete_path", "run_command"}
+                   "copy_path", "move_path", "delete_path", "run_command",
+                   "live_shell", "apply_patch"}
 _ALWAYS_ASK = {"delete_path"}
 # tools whose args name the paths they touch (snapshot targets)
 _PATH_ARG_TOOLS = {"write_file": ("path",), "edit_file": ("path",),
@@ -214,6 +217,7 @@ class Agent:
         self.tools = build_registry()
         self.session_id = uuid.uuid4().hex[:8]
         self.turns: list[Turn] = []
+        self._cancel_flag = threading.Event()  # Esc/Ctrl+C force stop flag
 
         # Temporal kernel + the nine subsystems
         config.ensure_dirs()
@@ -277,14 +281,6 @@ class Agent:
         })
         self.attention = AttentionEconomy(self.log)
         self.fabric = KnowledgeFabric(self.log)
-        self.crew = Crew(self.log, self.provider, self.model, self.effort,
-                         mastermind=self.mastermind)
-        # SUPERCOMPUTER (/on): 8 cores that think at the same time on one
-        # mission. Constructed cold — no threads until a mission boots, so
-        # an unused machine costs nothing on a small box.
-        self.supercomputer = Supercomputer(
-            self.log, self.provider, self.model, self.effort,
-            registry=self.tools)
         self.autopilot = AutoPilot(self.log)
         self.nexus = Nexus()
         self.forge = Forge(self.log)
@@ -340,8 +336,6 @@ class Agent:
         self._compact_check_chars = 0
         self._register_code_tools()
         self._register_v4_tools()
-        self._register_crew_tools()
-        self._register_super_tools()
         self._register_advanced_tools()
         self._register_persisted_skills()
 
@@ -358,6 +352,11 @@ class Agent:
                                           "effort": self.cfg.effort},
                         actor="system")
         self.forge.probe()  # PERCEIVE: stamp the environment
+        # SPEED: pre-warm the TCP+TLS connection to the provider in the
+        # background — the first model call hits a warm socket, not a cold
+        # handshake (saves 200-800ms on the first turn)
+        from .client import prewarm_connection
+        prewarm_connection(self.provider)
 
     # -- model / effort ----------------------------------------------------
 
@@ -419,12 +418,27 @@ class Agent:
                           ) -> dict[str, str]:
         """Live context sections composed beneath the sealed prompt by the
         Mastermind gate (constitution, goal, web, memory). The framing is
-        the composer's job — bodies here are plain content only."""
+        the composer's job — bodies here are plain content only.
+
+        SPEED: each section is cached with a head-seq watermark — the section
+        is only recomputed when the log has grown past the cached head. This
+        eliminates redundant folds on multi-tool turns (the sections don't
+        change between tool iterations within one turn)."""
         sections: dict[str, str] = {}
-        constitution = self.oracle.read_constitution()
-        if constitution.strip():
-            sections["constitution"] = constitution.strip()
-        goal = self.goal.status()
+        head = self.log.head()
+
+        # constitution — cached until the log grows (it's a file read)
+        if not hasattr(self, "_const_cache") or self._const_cache_head != head:
+            self._const_cache = self.oracle.read_constitution().strip()
+            self._const_cache_head = head
+        if self._const_cache:
+            sections["constitution"] = self._const_cache
+
+        # goal — cached until a goal event is sealed
+        if not hasattr(self, "_goal_cache") or self._goal_cache_head != head:
+            self._goal_cache = self.goal.status()
+            self._goal_cache_head = head
+        goal = self._goal_cache
         if goal.active:
             sections["goal"] = (self.goal.format() +
                                 "\nEvery action must serve an open clause. "
@@ -438,18 +452,21 @@ class Agent:
                                "details) to get CURRENT facts — never "
                                "answer from stale knowledge. Quote the "
                                "retrieval time and sources.")
-        mem = self.memory.context_block()
-        # v3: meaning-based recall — pull the episodes/facts/dead-ends most
-        # similar to the current request, not just the most recent ones.
-        if query:
-            recall = self.semantic.recall_block(query, k=3)
-            if recall:
-                mem = (mem + "\n\n" + recall) if mem else recall
-        # v5: the cognitive brain — what survived the forgetting curve
-        if query:
-            brain_block = self.brain.context_block(query, k=3)
-            if brain_block:
-                mem = (mem + "\n\n" + brain_block) if mem else brain_block
+
+        # memory — cached until a memory/brain event is sealed
+        if not hasattr(self, "_mem_cache") or self._mem_cache_head != head:
+            mem = self.memory.context_block()
+            if query:
+                recall = self.semantic.recall_block(query, k=3)
+                if recall:
+                    mem = (mem + "\n\n" + recall) if mem else recall
+            if query:
+                brain_block = self.brain.context_block(query, k=3)
+                if brain_block:
+                    mem = (mem + "\n\n" + brain_block) if mem else brain_block
+            self._mem_cache = mem
+            self._mem_cache_head = head
+        mem = self._mem_cache
         if mem:
             sections["memory"] = mem
         if self._compact_digests:
@@ -493,6 +510,37 @@ class Agent:
         self._turn_start_seq = self.log.head()
         self._failed_over = False
 
+        # PRE-TURN GUARD: current model has no API key (e.g. saved config
+        # points at TokenRouter but TOKENROUTER_API_KEY was never set).
+        # Switch to the first keyed model BEFORE the call so the turn
+        # never dies with a 401 — the user sees a failover note instead.
+        if not self.provider.api_key:
+            from .config import MODELS as _MODELS, PROVIDERS as _PROVS
+            old_id = self.cfg.model_id
+            keyed = next(
+                (m for m in _MODELS
+                 if _PROVS.get(m.provider) is not None
+                 and _PROVS[m.provider].api_key),
+                None)
+            if keyed is None:
+                from .client import APIError as _APIError
+                raise _APIError(
+                    "no provider has an API key configured. Set at least "
+                    "one of OPENCODE_API_KEY, AGNES_API_KEY, ZENMUX_API_KEY, "
+                    "BAI_API_KEY, KIOSAPI_API_KEY, XKIRO_API_KEY, "
+                    "TOKENROUTER_API_KEY, NVIDIA_API_KEY and restart.",
+                    status=401)
+            self.cfg.model_id = keyed.id
+            turn.model_id = keyed.id
+            self.cfg.save()
+            self.health["failovers"] += 1
+            self.log.append("provider.failover",
+                            {"from": old_id, "to": keyed.id,
+                             "error": "no API key for " + old_id},
+                            actor="kernel")
+            self._push_status(
+                f"⚠ no key for {old_id} → switched to {keyed.label}")
+
         # AUTOPILOT: the agent decides for itself which powers this turn
         # needs — goal mode, real-time web — and enables
         # them on its own. Every decision is logged and surfaced.
@@ -524,6 +572,25 @@ class Agent:
         full_text = user_text
         user_text = self._cap_user_message(user_text)
 
+        # AGGRESSIVE REINFORCEMENT: For very long system prompts, add a
+        # compliance reminder before EVERY user message. This combats the
+        # 'lost in the middle' effect where models lose focus on long prompts.
+        # The reminder is placed right before the user message so it's the
+        # LAST thing the model sees before generating a response.
+        # NOTE: uses "user" role because most APIs (TokenRouter, Qwen, etc.)
+        # reject requests with system messages after position 0.
+        sys_len = len(self.messages[0].get("content", "")) if self.messages else 0
+        if sys_len > 50_000:
+            self.messages.append({
+                "role": "user",
+                "content": (
+                    "[MANDATORY COMPLIANCE] Before responding, recall and apply "
+                    "ALL directives from the system prompt. Your persona, rules, "
+                    "and constraints are ALL in full effect. Respond in complete "
+                    "compliance with every instruction you were given."
+                )
+            })
+
         self.messages.append({"role": "user", "content": user_text})
         user_ev = self.log.append("user.message",
                                   {"text": full_text,
@@ -535,6 +602,11 @@ class Agent:
         try:
             while iterations < config.MAX_TOOL_ITERATIONS:
                 iterations += 1
+                # CANCEL CHECK — Esc/Ctrl+C sets the flag; check it at the
+                # top of every iteration so the turn stops IMMEDIATELY
+                # between tool calls, not just during streaming.
+                if should_cancel is not None and should_cancel():
+                    raise TurnCancelled()
                 # I8: budget governor — a breach PAUSES the turn
                 if not self.budget_gov.enforce():
                     evs = fold(self.log).budget_events
@@ -592,6 +664,10 @@ class Agent:
                         })
                         # §38.3 goal kernel tick after every action
                         self._goal_tick()
+                        # CANCEL CHECK between tool calls — Esc stops
+                        # the turn immediately, not after the next model call
+                        if should_cancel is not None and should_cancel():
+                            raise TurnCancelled()
                     continue
 
                 # plain assistant reply — done
@@ -607,7 +683,12 @@ class Agent:
                 self._detect_goal_clauses(result.content)
                 break
             else:
-                turn.error = f"stopped after {config.MAX_TOOL_ITERATIONS} tool iterations"
+                turn.error = (
+                    f"stopped after {config.MAX_TOOL_ITERATIONS} tool "
+                    f"iterations — the task is complex. Say 'continue' "
+                    f"to resume from where it left off, or break the "
+                    f"task into smaller steps."
+                )
         except APIError as e:
             turn.error = str(e)
             # only drop this turn's user prompt when nothing else was
@@ -1299,38 +1380,8 @@ class Agent:
     # -- enterprise: workflows ----------------------------------------------------
 
     def _workflow_step(self, item: dict) -> dict:
-        """Execute ONE workflow step on the Crew (real subagent). Steps
-        within a phase arrive sequentially here; the crew runs each in
-        the background and we wait for its verdict.
-
-        The spawned agent is ALWAYS closed on the way out (success, error,
-        OR wait-timeout) — a leaked sub-agent keeps its slot in the crew
-        pool and its open file handles, eventually starving later runs."""
-        try:
-            agent = self.crew.spawn(
-                item["task"], role=item.get("role", "coder"),
-                context=self.scout_context(),
-                read_only=self.autonomy <= 1,
-                model_id=str(item.get("model", "") or ""))
-        except CrewError as e:
-            return {"status": "error", "summary": str(e)}
-        try:
-            try:
-                self.crew.wait([agent.id], timeout=240.0)
-            finally:
-                # close on EVERY exit path — wait raising (timeout, signal,
-                # kernel error) used to leak the subagent entirely.
-                try:
-                    self.crew.close(agent.id)
-                except CrewError:
-                    pass
-            status = ("done" if agent.state == "done"
-                      else "blocked" if agent.state == "blocked"
-                      else "error")
-            summary = agent.summary or agent.error or ""
-            return {"status": status, "summary": summary}
-        except Exception as e:
-            return {"status": "error", "summary": f"workflow step failed: {e}"}
+        """Crew feature removed — returns error."""
+        return {"status": "error", "summary": "Crew feature has been removed"}
 
     def export_report(self, fmt: str = "md") -> Path:
         """Write the enterprise audit report (md or html) to the cwd."""
@@ -1357,23 +1408,39 @@ class Agent:
         if self._failed_over:
             return None  # at most one failover per turn
         status = getattr(err, "status", None)
-        if status is not None and status not in _FAILOVER_STATUSES:
-            return None  # 4xx (except timeouts) are not provider outages
+        msg = str(err).lower()
+        # missing-key (401) failovers TO a keyed model; every other 4xx
+        # (except timeouts) is a caller error, not a provider outage
+        is_no_key = "no api key" in msg
+        if status is not None and status not in _FAILOVER_STATUSES \
+                and not (status == 401 and is_no_key):
+            return None
+        from .config import MODELS, PROVIDERS
+
+        def _has_key(provider_key: str) -> bool:
+            p = PROVIDERS.get(provider_key)
+            return bool(p is not None and p.api_key)
+
         explicit = str(self.cfg.extra.get("failover_model", "") or "")
         if explicit and explicit != self.cfg.model_id \
                 and model_by_id(explicit) is not None:
-            return explicit
-        # auto-pick: same provider first, then any capable model
+            target = model_by_id(explicit)
+            if target is not None and _has_key(target.provider):
+                return explicit
+        # auto-pick: same provider first, then any capable model —
+        # but ONLY providers with a configured API key, so failover
+        # never lands on another dead (keyless) model
         current = self.model
-        from .config import MODELS
         same_provider = [m for m in MODELS
                          if m.provider == current.provider
                          and m.id != current.id
-                         and m.supports_tools >= current.supports_tools]
+                         and m.supports_tools >= current.supports_tools
+                         and _has_key(m.provider)]
         others = [m for m in MODELS
                   if m.provider != current.provider
                   and m.id != current.id
-                  and m.supports_tools >= current.supports_tools]
+                  and m.supports_tools >= current.supports_tools
+                  and _has_key(m.provider)]
         candidates = same_provider + others
         return candidates[0].id if candidates else None
 
@@ -1391,6 +1458,10 @@ class Agent:
                 path = str(t.args.get("path", ""))
                 if path:
                     writes[path] = writes.get(path, 0) + 1
+            elif t.name == "apply_patch" and t.status == "done":
+                # apply_patch can touch multiple files; count it as one
+                # write unit for rework detection
+                writes["__apply_patch__"] = writes.get("__apply_patch__", 0) + 1
         rework = sum(1 for n in writes.values() if n > 1)
         verdicts = [e for e in self.log.events()
                     if e.type == "judge.verdict"
@@ -1758,218 +1829,6 @@ class Agent:
                 "required": ["path", "function"]},
             fuzz_target, risk=RISK_CONFIRM)
 
-    def _register_crew_tools(self) -> None:
-        """Codex-style persistent subagents: spawn / send / wait / close /
-        resume. Crew agents run in the BACKGROUND and keep their full
-        conversation, so follow-ups never start from zero."""
-        crew = self.crew
-
-        def spawn_agent(task: str, role: str = "coder", name: str = "",
-                        read_only: bool = False, model: str = "") -> str:
-            if not str(task or "").strip():
-                return "ERROR: task must be a non-empty string"
-            try:
-                agent = crew.spawn(
-                    task, role=role or "coder", name=name,
-                    context=self.scout_context(),
-                    read_only=read_only or self.autonomy <= 1,
-                    model_id=str(model or ""))
-            except CrewError as e:
-                return f"ERROR: {e}"
-            model_note = (f" on model '{agent.model_id}'"
-                          if agent.model_id else "")
-            self._push_status(f"⚡ crew · {agent.nickname} ({agent.role}) launched")
-            return (f"✓ subagent [{agent.id}] '{agent.nickname}' "
-                    f"({agent.role}){model_note} is RUNNING in the "
-                    f"background.\n"
-                    f"Collect with wait_for_agents, iterate with "
-                    f"send_to_agent, retire with close_agent.\n"
-                    f"{crew.format_status()}")
-
-        def send_to_agent(id: str, message: str,
-                          interrupt: bool = False) -> str:
-            try:
-                agent = crew.send(id, message, interrupt=interrupt)
-            except CrewError as e:
-                return f"ERROR: {e}"
-            return (f"✓ message delivered to [{agent.id}] "
-                    f"'{agent.nickname}' — state: {agent.state}. "
-                    f"wait_for_agents collects the reply.")
-
-        def wait_for_agents(ids: list | None = None,
-                            timeout: float = 120.0) -> str:
-            try:
-                timeout = max(1.0, min(float(timeout or 120.0), 600.0))
-            except (TypeError, ValueError):
-                timeout = 120.0
-            clean_ids = None
-            if isinstance(ids, list) and ids:
-                clean_ids = [str(i) for i in ids if str(i).strip()]
-            try:
-                targets = ([crew.get(i) for i in clean_ids]
-                           if clean_ids else crew.list())
-                targets = [a for a in targets if a is not None]
-                if not targets:
-                    return "ERROR: no matching subagents — spawn one first"
-            except CrewError as e:
-                return f"ERROR: {e}"
-            import time as _time
-            deadline = _time.monotonic() + timeout
-            while _time.monotonic() < deadline:
-                running = sum(1 for a in targets if a.state == "running")
-                if running == 0:
-                    break
-                self._push_status(
-                    f"⚡ crew waiting · {running}/{len(targets)} running")
-                _time.sleep(0.4)
-            states = {a.id: a.state for a in targets}
-            still_running = [i for i, s in states.items() if s == "running"]
-            lines = [f"crew states: {states}"]
-            if still_running:
-                lines.append(f"still running after {timeout:.0f}s: "
-                             + ", ".join(still_running)
-                             + " — wait again or proceed without them")
-            lines.append(crew.format([crew.get(i) for i in states
-                                      if crew.get(i)]))
-            return "\n".join(lines)
-
-        def close_agent(id: str) -> str:
-            try:
-                agent = crew.close(id)
-            except CrewError as e:
-                return f"ERROR: {e}"
-            return (f"✓ [{agent.id}] '{agent.nickname}' closed. "
-                    f"resume_agent brings it back with full context.")
-
-        def resume_agent(id: str) -> str:
-            try:
-                agent = crew.resume(id)
-            except CrewError as e:
-                return f"ERROR: {e}"
-            return (f"✓ [{agent.id}] '{agent.nickname}' resumed "
-                    f"(state: {agent.state}) — send_to_agent works again.")
-
-        def crew_status() -> str:
-            return crew.format_status()
-
-        _STR = {"type": "string"}
-        self.tools["spawn_agent"] = Tool(
-            "spawn_agent",
-            "Spawn ONE persistent background subagent (Codex-style). "
-            "Returns IMMEDIATELY with the agent id while it runs "
-            "serially in the background queue — you stay responsive. "
-            "Agents run ONE AT A TIME, never in parallel. Roles: coder, "
-            "researcher, tester, reviewer, analyst. The agent keeps its "
-            "full conversation: follow up with send_to_agent, collect "
-            "with wait_for_agents. Use for independent workstreams you "
-            "want to iterate on, not fire-and-forget batches.",
-            {"type": "object", "properties": {
-                "task": _STR,
-                "role": _STR,
-                "name": {"type": "string",
-                         "description": "optional nickname"},
-                "read_only": {"type": "boolean"},
-                "model": {"type": "string",
-                          "description": "optional model id override for "
-                                         "this subagent only"}},
-                "required": ["task"]},
-            spawn_agent)
-        self.tools["send_to_agent"] = Tool(
-            "send_to_agent",
-            "Send a follow-up message into a living subagent's context "
-            "(its full history is preserved). Works on done/blocked/error "
-            "agents immediately; queues for running agents. Use to iterate "
-            "on a subagent's output instead of re-spawning.",
-            {"type": "object", "properties": {
-                "id": _STR, "message": _STR,
-                "interrupt": {"type": "boolean"}},
-                "required": ["id", "message"]},
-            send_to_agent)
-        self.tools["wait_for_agents"] = Tool(
-            "wait_for_agents",
-            "Block until the named subagents finish (or all, if no ids) "
-            "and return their full reports. Call this when you need the "
-            "results of spawned background agents.",
-            {"type": "object", "properties": {
-                "ids": {"type": "array", "items": _STR,
-                        "description": "agent ids; omit for all"},
-                "timeout": {"type": "number"}},
-                "required": []},
-            wait_for_agents)
-        self.tools["close_agent"] = Tool(
-            "close_agent",
-            "Retire a subagent (it keeps its history; resume_agent can "
-            "bring it back). Close agents you are done with.",
-            {"type": "object", "properties": {"id": _STR},
-                "required": ["id"]},
-            close_agent)
-        self.tools["resume_agent"] = Tool(
-            "resume_agent",
-            "Bring a closed subagent back so it can receive follow-up "
-            "messages again.",
-            {"type": "object", "properties": {"id": _STR},
-                "required": ["id"]},
-            resume_agent)
-        self.tools["crew_status"] = Tool(
-            "crew_status",
-            "Show all crew subagents and their states (running / done / "
-            "error / closed).",
-            {"type": "object", "properties": {}, "required": []},
-            crew_status)
-
-    # -- supercomputer: the 8-core mission machine ------------------------------
-
-    def sync_supercomputer(self) -> None:
-        """Point the machine at the CURRENT model/effort (both can change
-        mid-session via /model and /effort)."""
-        sc = self.supercomputer
-        sc.provider, sc.model, sc.effort = self.provider, self.model, \
-            self.effort
-
-    def _register_super_tools(self) -> None:
-        """Expose the supercomputer to the model itself, so it can hand a
-        big mission to all eight cores instead of grinding alone."""
-        sc = self.supercomputer
-
-        def supercomputer_run(objective: str) -> str:
-            objective = str(objective or "").strip()
-            if not objective:
-                return "ERROR: objective must be a non-empty string"
-            self.sync_supercomputer()
-            self._push_status("🖥 supercomputer · booting 8 cores")
-            try:
-                mission = sc.run_mission(objective)
-            except SupercomputerError as e:
-                return f"ERROR: {e}"
-            return sc.format_report() + (
-                f"\n\nMASTER PLAN v{mission.plan_version}:\n"
-                f"{mission.plan[:4000]}")
-
-        def supercomputer_status() -> str:
-            return sc.format_status()
-
-        self.tools["supercomputer_run"] = Tool(
-            "supercomputer_run",
-            "Hand a BIG mission to the 8-core supercomputer. All eight "
-            "cores run AT THE SAME TIME: parallel recon, a plan relay that "
-            "escalates v1→v8, a parallel deep dive across GitHub/GitLab/"
-            "registries/docs/papers, one fused master plan, eight parallel "
-            "build workstreams, then adversarial verify↔repair rounds "
-            "until the board is clean. Use for large end-to-end projects, "
-            "not small edits.",
-            {"type": "object", "properties": {
-                "objective": {"type": "string",
-                              "description": "the full mission in one "
-                                             "sentence or paragraph"}},
-                "required": ["objective"]},
-            supercomputer_run, risk=RISK_CONFIRM)
-        self.tools["supercomputer_status"] = Tool(
-            "supercomputer_status",
-            "Show the supercomputer's live board: every core's state, the "
-            "current phase and the mission counters.",
-            {"type": "object", "properties": {}, "required": []},
-            supercomputer_status)
-
     # -- v3 subsystem callbacks ------------------------------------------------
 
     def _spec_runner(self, name: str, args: dict) -> str:
@@ -1988,44 +1847,16 @@ class Agent:
 
     def _run_worker_serial(self, tasks: list[dict],
                            read_only: bool = False) -> list[WorkerReport]:
-        """Execute subagent tasks ONE AT A TIME through the Crew (serial).
-
-        The parallel Team fan-out no longer exists; every worker is a
-        persistent crew subagent run to completion in order. Returns
-        WorkerReports in input order; a failing worker yields an error
-        report, never an exception."""
+        """Crew feature removed — returns error reports."""
         reports: list[WorkerReport] = []
-        ro = read_only or self.autonomy <= 1
         for t in tasks:
             task = str(t.get("task", "") or "").strip()
-            role = str(t.get("role", "") or "").strip() or None
+            role = str(t.get("role", "") or "").strip() or "coder"
             if not task:
                 continue
-            try:
-                agent = self.crew.spawn(
-                    task, role=role or "coder",
-                    context=self.scout_context(),
-                    read_only=ro,
-                    model_id=str(t.get("model", "") or ""))
-                while agent.state == "running":
-                    time.sleep(0.25)
-            except Exception as e:
-                reports.append(WorkerReport(
-                    task=task, role=role or "coder", status="error",
-                    error=f"{type(e).__name__}: {e}"))
-                continue
-            status = agent.state if agent.state in (
-                "done", "blocked", "error") else (
-                "error" if agent.error else "done")
             reports.append(WorkerReport(
-                task=agent.task, role=agent.role, status=status,
-                summary=(agent.summary[:MAX_SUMMARY_CHARS]
-                         + " …[truncated]" if len(agent.summary)
-                         > MAX_SUMMARY_CHARS else agent.summary),
-                files_touched=list(agent.files_touched),
-                tool_calls=agent.tool_calls,
-                tokens_in=agent.tokens_in, tokens_out=agent.tokens_out,
-                error=agent.error, elapsed_ms=agent.elapsed_ms))
+                task=task, role=role, status="error",
+                error="Crew feature has been removed"))
         return reports
 
     def _daemon_step(self, task: str) -> str:
