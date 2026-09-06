@@ -1,4 +1,4 @@
-> **New in v3.2: `/on` live computer mode** — eight concurrent API-backed specialists, shared planning, owned-file writes, real command output, approval gates, bounded repair and recovery. Start with [COMPUTER_MODE.md](COMPUTER_MODE.md); see [VERIFICATION.md](VERIFICATION.md) for actual test scope. The legacy Crew stays serial. Configure your own provider keys; long embedded key defaults were removed. **This update is a local source bundle, not a published GitHub release**—older binary/curl installers below may fetch an older version; install this ZIP using the new guide.
+> **New in v3.2: `/on` live computer mode** — eight concurrent API-backed specialists, shared planning, owned-file writes, real command output, approval gates, bounded repair and recovery. Start with [COMPUTER_MODE.md](COMPUTER_MODE.md); see [VERIFICATION.md](VERIFICATION.md) for actual test scope. The legacy Crew stays serial. API keys ship as built-in defaults so the app works out of the box; your own environment variables always take precedence. Published GitHub release with single-file binaries: [v3.2.1](https://github.com/cmyolo441-coder/perfectagent/releases/tag/v3.2.1).
 
 <div align="center">
 
@@ -24,7 +24,7 @@
   <a href="https://github.com/cmyolo441-coder/perfectagent/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-6272a4?style=flat-square" alt="license"></a>
 </p>
 
-*`Event-Sourced Kernel` · `Goal Contracts` · `Persistent Crew` · `Self-Healing` · `Temporal Kernel` · `40+ Slash Commands` · `16 Tools` · `5 Providers`*
+*`Event-Sourced Kernel` · `Goal Contracts` · `Persistent Crew` · `Self-Healing` · `Temporal Kernel` · `40+ Slash Commands` · `16 Tools` · `9 Providers`*
 
 <p>
   <a href="#-install-binary--curl-one-liner"><b>Install</b></a> •
@@ -141,8 +141,14 @@ python main.py
 - **Forecast** — `/forecast` projects turns-to-done from measured goal
   velocity and tokens-per-turn (numbers, not vibes)
 - **Provider failover** — on outage (429/5xx) the agent switches to a
-  fallback model once, sealed as `provider.failover`; `/health` shows
-  the stats
+  fallback model once, sealed as `provider.failover`; failover only
+  lands on providers with a configured key, and a turn never starts on
+  a keyless model (pre-turn guard auto-switches instead of a 401);
+  `/health` shows the stats
+- **Computer-mode rate-limit resilience** — `/on` workers survive 429s
+  with escalating backoff + jitter (6 attempts), staggered first
+  requests, and 4 parallel workers by default so free-tier quotas hold;
+  token budget ceiling raised to 100M
 - **Notifications** — `/notify <webhook|file:path>` fires kernel events
   (goal closed, focus stop, workflow done…) to your sink
 - **Session resume** — `/resume` lists branches/sessions; continue any
@@ -233,30 +239,36 @@ tokens, temperature, and reasoning effort.
 
 ## Models & providers
 
-Six OpenAI-compatible providers are built in:
+Nine OpenAI-compatible providers are built in:
 
 - **OpenCode Zen** (`https://opencode.ai/zen/v1`) — mimo-v2.5-free,
   big-pickle, grok-code-fast-1, claude-sonnet-4-5, claude-opus-4-6,
-  gemini-3.1-pro, gpt-5.2, muse-spark-1.2-contributor-free,
-  muse-spark-1.3-contributor-free
+  gemini-3.1-pro, gpt-5.2
+- **OpenCode** (`https://opencode.ai/zen/v1`) —
+  muse-spark-1.2-contributor-free, muse-spark-1.3-contributor-free
 - **TokenRouter** (`https://api.tokenrouter.com/v1`) — qwen/qwen3.8-max-free,
   deepseek-ai/DeepSeek-V3.2, deepseek/deepseek-v4-pro-0813-free,
-  moonshotai/Kimi-K2-Instruct
+  moonshotai/Kimi-K2-Instruct, z-ai/glm-5.3-free
 - **Agnes** (`https://apihub.agnes-ai.com/v1`) — agnes-2.5-flash (fast,
   tool-capable, reasoning-aware)
 - **ZenMux** (`https://zenmux.ai/api/v1`) — dots-studio/dots3-note-prev
 - **NVIDIA NIM** (`https://integrate.api.nvidia.com/v1`) —
   deepseek-ai/deepseek-v4-pro-0813 (1M context, tool-calling, reasoning)
+- **B.AI** (`https://api.b.ai/v1`) — deepseek-v4-flash, qwen3.8-flash,
+  glm-5.3-flash (fast)
 - **KiosAPI Router** (`https://router.kiosapi.com/v1`) —
   grok-composer-2.5-fast, grok-4.6, oc/muse-spark-1.2-contributor
+- **XKiro** (`https://api.xkiro.com/v1`) — qwen/qwen3.7-max:free,
+  qwen/qwen3.8-max:free, qwen/qwen3.7-plus:free,
+  minimax/minimax-m2.7-highspeed:free
 
 API keys ship as built-in defaults so the app works out of the box;
 environment variables always take precedence if you want to use your
 own:
 
 ```bash
-export OPENCODE_API_KEY=***      # OpenCode Zen (default provider)
-# and/or: TOKENROUTER_API_KEY, AGNES_API_KEY, ZENMUX_API_KEY, NVIDIA_API_KEY, KIOSAPI_API_KEY
+export OPENCODE_API_KEY=***      # OpenCode Zen + OpenCode (default provider)
+# and/or: TOKENROUTER_API_KEY, AGNES_API_KEY, ZENMUX_API_KEY, NVIDIA_API_KEY, BAI_API_KEY, KIOSAPI_API_KEY, XKIRO_API_KEY
 ```
 
 > ⚠️ The built-in keys live in git history — if you push this repo
